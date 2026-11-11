@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "octo-ai"
+version = "0.1.0"
+description = "A Python coding agent with persistent sessions and extensible tools."
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+readme = "README.md"
+dependencies = [
+    "anyio>=4.0",
+    "httpx[socks]>=0.27",
+    "packaging>=24.0",
+    "pillow>=11.0",
+    "pydantic>=2.11",
+    "pygments>=2.18",
+    "rich>=13.0",
+    "textual>=8.2.8",
+    "typer>=0.12",
+]
+
+[project.scripts]
+octo = "octo_coding.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["octo_agent*", "octo_ai*", "octo_coding*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+octo_coding = ["data/*.toml", "data/*.json", "tui/themes/*.json"]
