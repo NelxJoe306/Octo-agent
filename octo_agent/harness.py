@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import Literal
 
+from octo_agent.context_harness import PrepareContext
 from octo_agent.events import AgentEvent, MessageEndEvent, MessageStartEvent
 from octo_agent.loop import AfterToolCall, BeforeToolCall, run_agent_loop
 from octo_agent.messages import (
@@ -44,6 +45,7 @@ class AgentHarnessConfig:
     session_id: str | None = None
     before_tool_call: BeforeToolCall | None = None
     after_tool_call: AfterToolCall | None = None
+    prepare_context: PrepareContext | None = None
 
 
 class SimpleCancellationToken:
@@ -184,6 +186,7 @@ class AgentHarness:
                 get_follow_up_messages=self._drain_follow_up_messages,
                 before_tool_call=self._config.before_tool_call,
                 after_tool_call=self._config.after_tool_call,
+                prepare_context=self._config.prepare_context,
             ):
                 await self._notify(event)
                 yield event

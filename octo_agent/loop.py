@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from time import monotonic_ns
 
+from octo_agent.context_harness import PrepareContext, prepare_model_context
 from octo_agent.events import (
     AgentEndEvent,
     AgentEvent,
@@ -64,6 +65,7 @@ async def run_agent_loop(
     get_follow_up_messages: Callable[[], Sequence[AgentMessage]] | None = None,
     before_tool_call: BeforeToolCall | None = None,
     after_tool_call: AfterToolCall | None = None,
+    prepare_context: PrepareContext | None = None,
 ) -> AsyncIterator[AgentEvent]:
 
     new_messages = list(prompts)
@@ -119,12 +121,17 @@ async def run_agent_loop(
                 return
 
 
+            model_messages = (
+                _provider_context(messages)
+                if prepare_context is None
+                else await prepare_model_context(messages, prepare_context, signal=signal)
+            )
             assistant = None
             async for event in _assistant_events(
                 provider=provider,
                 model=model,
                 system=system,
-                messages=_provider_context(messages),
+                messages=model_messages,
                 tools=tools,
                 signal=signal,
                 session_id=session_id,
