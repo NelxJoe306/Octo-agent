@@ -12,7 +12,7 @@ import anyio
 import typer
 
 from octo_agent.provider import ModelProvider
-from octo_agent.session import JsonlSessionStorage, SessionEntry, SessionStorage
+from octo_agent.session import JsonlSessionStorage, SessionEntry, SessionStorage, SQLiteSessionStorage
 from octo_ai.env import (
     DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
     DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES,
@@ -54,10 +54,10 @@ from octo_coding.session import (
     CodingSession,
     CodingSessionConfig,
     TerminalCommandResult,
-    jsonl_session_storage,
     parse_terminal_command,
 )
 from octo_coding.session_export import (
+    session_export_filename,
     default_session_export_artifact_path,
     export_session_artifact,
     normalize_export_format,
@@ -670,14 +670,15 @@ async def export_session_command(
     session_manager: SessionManager | None = None,
 ) -> Path:
 
-    session_path, title = _resolve_export_source(session_ref, session_manager)
-    entries = await JsonlSessionStorage(session_path).read_all()
+    storage, title, export_name = _resolve_export_source(session_ref, session_manager)
+    session_path = storage.path
+    entries = await storage.read_all()
     normalized_format = normalize_export_format(
         export_format or (output_path.suffix.removeprefix(".") if output_path else "html")
     )
     destination = _resolve_export_destination(
         output_path,
-        session_path=session_path,
+        session_path=export_name,
         format=normalized_format,
     )
     return export_session_artifact(
@@ -686,6 +687,7 @@ async def export_session_command(
         title=title,
         source=str(session_path),
         format=normalized_format,
+        session_id=storage.session_id if isinstance(storage, SQLiteSessionStorage) else None,
     )
 
 
@@ -816,12 +818,14 @@ def _resolve_export_destination(
 def _resolve_export_source(
     session_ref: str,
     session_manager: SessionManager | None = None,
-) -> tuple[Path, str]:
+) -> tuple[JsonlSessionStorage | SQLiteSessionStorage, str, Path]:
     candidate_path = Path(session_ref).expanduser()
     if candidate_path.exists():
         if candidate_path.is_dir():
             raise RuntimeError(f"Session export source is a directory: {candidate_path}")
-        return candidate_path, f"Octo session {candidate_path.stem}"
+        if candidate_path.suffix.lower() != ".jsonl":
+            raise RuntimeError("Export a SQLite session by session id, not by database path")
+        return JsonlSessionStorage(candidate_path), f"Octo session {candidate_path.stem}", candidate_path
 
     manager = session_manager or SessionManager()
     record = manager.get_session(session_ref)
@@ -829,7 +833,7 @@ def _resolve_export_source(
         raise RuntimeError(f"Unknown session or file: {session_ref}")
 
     title = record.title or f"Octo session {record.id}"
-    return record.path, title
+    return manager.storage_for(record), title, Path(session_export_filename(title, str(record.path), record.id))
 
 
 def render_provider_settings(
@@ -948,7 +952,7 @@ async def run_openai_rpc_mode(
             session_provider_name=record.provider_name,
             thinking_level_override=thinking_level_override,
             cwd=record.cwd,
-            storage=jsonl_session_storage(record.path),
+            storage=manager.storage_for(record),
             session_id=record.id,
             session_manager=manager,
             provider_name=selection.provider.name,
@@ -1090,7 +1094,7 @@ async def run_openai_print_mode(
             cwd=record.cwd,
             provider=initial_provider,
             output=output,
-            storage=jsonl_session_storage(record.path),
+            storage=manager.storage_for(record),
             session_id=record.id,
             session_manager=manager,
             provider_name=selected_provider,

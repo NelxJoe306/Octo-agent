@@ -34,6 +34,7 @@ from octo_agent.session import (
     SessionInfoEntry,
     SessionState,
     SessionStorage,
+    SQLiteSessionStorage,
     ThinkingLevelChangeEntry,
 )
 from octo_agent.session.entries import SessionEntry
@@ -138,6 +139,7 @@ from octo_coding.resources import (
     resource_paths_with_project_trust,
 )
 from octo_coding.session_export import (
+    session_export_filename,
     default_session_export_artifact_path,
     export_session_artifact,
     normalize_export_format,
@@ -1098,22 +1100,25 @@ class CodingSession:
 
         entries = await self._read_session_entries()
         session_path = _storage_path(self._config.storage)
+        title = _session_export_title(self)
         export_format = normalize_export_format(
             format or (destination.suffix.removeprefix(".") if destination else "html")
         )
         output_path = _resolve_export_destination(
             destination,
             cwd=self.cwd,
-            session_path=session_path,
+            session_path=(Path(session_export_filename(title, str(session_path), self.storage.session_id))
+                          if isinstance(self.storage, SQLiteSessionStorage) else session_path),
             format=export_format,
         )
         return export_session_artifact(
             entries,
             output_path,
-            title=_session_export_title(self),
+            title=title,
             source=str(session_path) if session_path is not None else self.session_id,
             format=export_format,
             system_prompt=self.system_prompt,
+            session_id=self.storage.session_id if isinstance(self.storage, SQLiteSessionStorage) else None,
         )
 
     @property
@@ -2608,7 +2613,7 @@ class CodingSession:
                 provider=None if dynamic_resume else self._harness.config.provider,
                 model=model,
                 cwd=record.cwd,
-                storage=jsonl_session_storage(record.path),
+                storage=manager.storage_for(record),
                 system=self._config.system,
                 custom_system_prompt=self._config.custom_system_prompt,
                 append_system_prompt=self._config.append_system_prompt,
@@ -2773,7 +2778,7 @@ class CodingSession:
                 provider=(None if dynamic_provider is not None else self._harness.config.provider),
                 model=record.model or model,
                 cwd=record.cwd,
-                storage=jsonl_session_storage(record.path),
+                storage=manager.storage_for(record),
                 session_id=record.id,
                 provider_name=provider_name,
                 inference_provider=inference_provider,
@@ -3556,6 +3561,10 @@ class CodingSession:
 
     def _ensure_session_file_initialized(self) -> None:
         if not self._pending_initial_entries:
+            return
+        if isinstance(self._config.storage, SQLiteSessionStorage):
+            self._config.storage.append_batch_sync(self._pending_initial_entries)
+            self._pending_initial_entries = ()
             return
         for entry in self._pending_initial_entries:
             _append_session_entry_sync(self._config.storage, entry)

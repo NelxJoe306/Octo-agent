@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import re
-from contextlib import suppress
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import time
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from octo_agent.session.sqlite import SQLiteSessionDatabase, SQLiteSessionStorage
 from octo_coding.paths import OctoPaths
 
 _MAX_SESSION_ID_BYTES = 128
@@ -122,6 +123,20 @@ class SessionManager:
 
     def __init__(self, paths: OctoPaths | None = None) -> None:
         self.paths = paths or OctoPaths()
+        self.database = SQLiteSessionDatabase(self.paths.database_path)
+        self._legacy_warnings: set[str] = set()
+
+    def storage_for(self, record: CodingSessionRecord) -> SQLiteSessionStorage:
+        migrated = replace(record, path=self.paths.database_path)
+        storage = SQLiteSessionStorage(self.paths.database_path, record.id,
+                                       record=migrated.to_model().model_dump())
+        if record.path.suffix.lower() == ".jsonl":
+            imported = next((item for item in self.database.list_records() if item["id"] == record.id), None)
+            if imported is None:
+                storage.import_jsonl_sync(record.path)
+        elif record.path.resolve() != self.paths.database_path.resolve():
+            raise ValueError("Session record belongs to a different database")
+        return storage
 
     @property
     def index_path(self) -> Path:
@@ -139,6 +154,9 @@ class SessionManager:
 
     def get_session(self, session_id: str) -> CodingSessionRecord | None:
 
+        for payload in self.database.list_records():
+            if payload["id"] == session_id:
+                return CodingSessionRecord.from_model(SessionRecordModel.model_validate(payload))
         for record in self._read_all_records():
             if record.id == session_id:
                 return record
@@ -196,23 +214,8 @@ class SessionManager:
         )
         if self.get_session(record.id) is not None:
             raise RuntimeError(f"Session already exists with id '{record.id}'")
-        try:
-            with record.path.open("x", encoding="utf-8"):
-                pass
-        except FileExistsError as exc:
-            raise RuntimeError(f"Session already exists with id '{record.id}'") from exc
-        except Exception:
-            with suppress(OSError):
-                record.path.unlink(missing_ok=True)
-            raise
-        try:
-            return self.index_session(record)
-        except Exception:
-            with suppress(Exception):
-                self._remove(record)
-            with suppress(OSError):
-                record.path.unlink(missing_ok=True)
-            raise
+        self.database.save_record(record.id, record.to_model().model_dump(), exclusive=True)
+        return record
 
     def prepare_session(
         self,
@@ -234,8 +237,7 @@ class SessionManager:
         default_session_id = f"default-{project_session_dir.name}"
         if record_id.casefold() == default_session_id.casefold():
             raise ValueError(f"Session id is reserved: {record_id}")
-        path = project_session_dir / f"{record_id}.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = self.paths.database_path
         return CodingSessionRecord(
             id=record_id,
             path=path,
@@ -269,7 +271,7 @@ class SessionManager:
             return existing
 
         now = time()
-        path = self.paths.default_session_path(resolved_cwd)
+        path = self.paths.database_path
         record = CodingSessionRecord(
             id=session_id,
             path=path,
@@ -326,45 +328,48 @@ class SessionManager:
         records: list[CodingSessionRecord] = []
 
 
-        for line in path.read_text(encoding="utf-8").split("\n"):
+        try:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeError) as error:
+            self._report_legacy_index(path, 0, error)
+            return []
+        for line_number, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not stripped:
                 continue
-            model = SessionRecordModel.model_validate_json(stripped)
+            try:
+                model = SessionRecordModel.model_validate_json(stripped)
+            except ValidationError as error:
+                self._report_legacy_index(path, line_number, error)
+                continue
             records.append(CodingSessionRecord.from_model(model))
         return records
 
+    def _report_legacy_index(self, path: Path, line: int, error: Exception) -> None:
+        diagnostic = f"Legacy session index {path}, line {line}: {type(error).__name__}; skipped"
+        if diagnostic not in self._legacy_warnings:
+            self._legacy_warnings.add(diagnostic)
+            logging.getLogger(__name__).warning(diagnostic)
+
     def _read_project_records(self, cwd: Path) -> list[CodingSessionRecord]:
         resolved_cwd = cwd.resolve()
-        records = self._read_index(self.project_index_path(resolved_cwd))
-        records.extend(
-            record for record in self._read_index(self.index_path) if record.cwd == resolved_cwd
-        )
-        return _deduplicate_records(records)
+        return [record for record in self._read_all_records() if record.cwd == resolved_cwd]
 
     def _read_all_records(self) -> list[CodingSessionRecord]:
         records = self._read_index(self.index_path)
         for index_path in self.paths.sessions_dir.glob("*/index.jsonl"):
             records.extend(self._read_index(index_path))
-        return _deduplicate_records(records)
-
-    def _write_index(self, path: Path, records: list[CodingSessionRecord]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        content = "\n".join(record.to_model().model_dump_json() for record in records)
-        if content:
-            content += "\n"
-        path.write_text(content, encoding="utf-8")
+        by_id = {record.id: record for record in _deduplicate_records(records)}
+        for payload in self.database.list_records():
+            record = CodingSessionRecord.from_model(SessionRecordModel.model_validate(payload))
+            by_id[record.id] = record
+        return list(by_id.values())
 
     def _upsert(self, record: CodingSessionRecord) -> None:
-        path = self.project_index_path(record.cwd)
-        records = [item for item in self._read_index(path) if item.id != record.id]
-        records.append(record)
-        self._write_index(path, records)
-
-    def _remove(self, record: CodingSessionRecord) -> None:
-        path = self.project_index_path(record.cwd)
-        records = [item for item in self._read_index(path) if item.id != record.id]
-        self._write_index(path, records)
+        if record.path.suffix.lower() == ".jsonl":
+            self.storage_for(record)
+            record = replace(record, path=self.paths.database_path)
+        self.database.save_record(record.id, record.to_model().model_dump())
 
 
 def _deduplicate_records(records: list[CodingSessionRecord]) -> list[CodingSessionRecord]:
