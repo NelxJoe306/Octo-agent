@@ -137,7 +137,6 @@ from octo_coding.session import (
     SessionTreeBranchResult,
     SessionTreeChoice,
     is_context_overflow_error,
-    jsonl_session_storage,
     parse_terminal_command,
 )
 from octo_coding.session_manager import CodingSessionRecord, SessionManager
@@ -8265,7 +8264,7 @@ async def run_tui_app(
                 provider=initial_provider,
                 model=record.model or selected_model,
                 cwd=record.cwd,
-                storage=jsonl_session_storage(record.path),
+                storage=manager.storage_for(record),
                 session_id=record.id,
                 session_manager=manager,
                 provider_name=selected_provider_name,

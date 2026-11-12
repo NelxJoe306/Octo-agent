@@ -38,6 +38,10 @@ class OctoPaths:
         return self.home / "sessions"
 
     @property
+    def database_path(self) -> Path:
+        return self.home / "octo.db"
+
+    @property
     def logs_dir(self) -> Path:
 
         return self.home / "logs"

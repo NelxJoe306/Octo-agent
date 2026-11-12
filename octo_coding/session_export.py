@@ -89,6 +89,7 @@ def export_session_html(
     title: str = "Octo Session Export",
     source: str | None = None,
     system_prompt: str | None = None,
+    session_id: str | None = None,
 ) -> Path:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +99,7 @@ def export_session_html(
             title=title,
             source=source,
             system_prompt=system_prompt,
+            session_id=session_id,
         ),
         encoding="utf-8",
     )
@@ -112,8 +114,13 @@ def export_session_artifact(
     source: str | None = None,
     format: str | None = None,
     system_prompt: str | None = None,
+    session_id: str | None = None,
 ) -> Path:
 
+    if source is not None:
+        protected = {Path(source).resolve(), Path(source + "-wal").resolve(), Path(source + "-shm").resolve()}
+        if output_path.resolve() in protected:
+            raise SessionExportError("Session export cannot overwrite its source database or log")
     export_format = normalize_export_format(format or output_path.suffix.removeprefix("."))
     if export_format == "jsonl":
         return export_session_jsonl(entries, output_path)
@@ -123,6 +130,7 @@ def export_session_artifact(
         title=title,
         source=source,
         system_prompt=system_prompt,
+        session_id=session_id,
     )
 
 
@@ -140,8 +148,11 @@ def _export_suffix(format: str) -> str:
     return ".jsonl" if normalize_export_format(format) == "jsonl" else ".html"
 
 
-def _jsonl_filename(title: str, source: str | None) -> str:
+def session_export_filename(title: str, source: str | None, session_id: str | None = None) -> str:
 
+    if session_id is not None:
+        name = re.sub(r"[^A-Za-z0-9._-]", "-", session_id).strip(".") or "octo-session"
+        return f"{name}.jsonl"
     if source:
         stem = Path(source).stem
         if stem:
@@ -178,6 +189,7 @@ def render_session_html(
     title: str = "Octo Session Export",
     source: str | None = None,
     system_prompt: str | None = None,
+    session_id: str | None = None,
 ) -> str:
 
     entry_list = list(entries)
@@ -198,7 +210,7 @@ def render_session_html(
     system_prompt_html = _render_system_prompt(system_prompt)
     generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     jsonl_b64 = base64.b64encode(_session_jsonl_text(entry_list).encode("utf-8")).decode("ascii")
-    jsonl_filename = _jsonl_filename(title, source)
+    jsonl_filename = session_export_filename(title, source, session_id)
     tool_count = sum(1 for entry in visible_entries if _entry_filter_kind(entry) == "tool")
     event_count = sum(1 for entry in visible_entries if _entry_filter_kind(entry) == "event")
     usage_html = render_usage_dashboard(

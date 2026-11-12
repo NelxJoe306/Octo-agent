@@ -12,7 +12,7 @@ import anyio
 from pydantic import BaseModel
 
 from octo_agent.messages import AssistantMessage, UserMessage
-from octo_agent.session import JsonlSessionStorage
+from octo_agent.session import JsonlSessionStorage, SQLiteSessionStorage
 from octo_agent.session.entries import SessionEntry
 from octo_agent.types import JSONValue
 from octo_coding.commands import CommandRegistry
@@ -632,6 +632,8 @@ def _model_wire(session: RpcSession, *, choice: ModelChoice | None = None) -> di
 
 def _session_file(session: RpcSession) -> str | None:
     storage = session.storage
+    if isinstance(storage, SQLiteSessionStorage):
+        return storage.locator
     return str(storage.path) if isinstance(storage, JsonlSessionStorage) else None
 
 
@@ -763,13 +765,21 @@ def _resolve_session_id(session: RpcSession, reference: str) -> str:
     manager = session.session_manager
     if manager is None:
         raise ValueError("Session manager is not available")
+    database_path, marker, session_id = reference.rpartition("#session=")
+    if marker:
+        record = manager.get_session(session_id)
+        if record is not None and record.path.resolve() == Path(database_path).expanduser().resolve():
+            return record.id
+        raise ValueError(f"Unknown session: {reference}")
     direct = manager.get_session(reference)
     if direct is not None:
         return direct.id
     candidate = Path(reference).expanduser().resolve(strict=False)
-    for record in manager.list_sessions():
-        if record.path.resolve(strict=False) == candidate:
-            return record.id
+    matches = [record for record in manager.list_sessions() if record.path.resolve(strict=False) == candidate]
+    if len(matches) > 1:
+        raise ValueError("Ambiguous session database path; use sessionId or a session locator")
+    if matches:
+        return matches[0].id
     raise ValueError(f"Unknown session: {reference}")
 
 

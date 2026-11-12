@@ -21,6 +21,7 @@ from octo_agent.session.jsonl import (
     entry_to_json_line,
 )
 from octo_agent.session.memory import SessionState
+from octo_agent.session.sqlite import SQLiteSessionStorage
 from octo_agent.session.storage import InMemorySessionStorage, JsonlSessionStorage, SessionStorage
 from octo_agent.session.tree import SessionTreeError, entries_by_id, path_to_entry
 
@@ -41,6 +42,7 @@ __all__ = [
     "SessionJsonlError",
     "SessionState",
     "SessionStorage",
+    "SQLiteSessionStorage",
     "SessionTreeError",
     "ThinkingLevelChangeEntry",
     "entries_by_id",
