@@ -105,6 +105,8 @@ class CommandResult:
 
 
     handled: bool
+    topic_arguments: str | None = None
+    map_requested: bool = False
     exit_requested: bool = False
     clear_requested: bool = False
     reload_requested: bool = False
@@ -116,7 +118,6 @@ class CommandResult:
     resume_session_id: str | None = None
     resume_picker_requested: bool = False
     prompts_picker_requested: bool = False
-    tree_picker_requested: bool = False
     login_picker_requested: bool = False
     custom_provider_login_requested: bool = False
     local_requested: bool = False
@@ -223,6 +224,10 @@ class CommandRegistry:
 def create_default_command_registry() -> CommandRegistry:
 
     registry = CommandRegistry()
+    registry.register(SlashCommand(name="topic", usage="/topic list | new <title> | use <id> | rename <title>",
+        description="Manage shared-history topics.", handler=_topic_command))
+    registry.register(SlashCommand(name="map", usage="/map", description="Open the topic map for this terminal session.",
+        handler=lambda context: CommandResult(handled=True, map_requested=True)))
     registry.register(
         SlashCommand(
             name="quit",
@@ -330,15 +335,6 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
-            name="tree",
-            usage="/tree",
-            description="Branch from a previous session entry.",
-            handler=_tree_command,
-            search_terms=("branch", "history", "fork"),
-        )
-    )
-    registry.register(
-        SlashCommand(
             name="name",
             usage="/name <new name>",
             description="Rename the current session.",
@@ -416,6 +412,10 @@ def create_default_command_registry() -> CommandRegistry:
         )
     )
     return registry
+
+
+def _topic_command(context: CommandContext) -> CommandResult:
+    return CommandResult(handled=True, topic_arguments=context.args)
 
 
 def _help_command(context: CommandContext) -> CommandResult:
@@ -618,12 +618,6 @@ def _resume_command(context: CommandContext) -> CommandResult:
         handled=True,
         resume_session_id=session_id,
     )
-
-
-def _tree_command(context: CommandContext) -> CommandResult:
-    if context.args:
-        return CommandResult(handled=True, message="Usage: /tree")
-    return CommandResult(handled=True, tree_picker_requested=True)
 
 
 def _name_command(context: CommandContext) -> CommandResult:

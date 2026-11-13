@@ -31,7 +31,7 @@ class SQLiteSessionDatabase:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2, 3):
                 raise RuntimeError(f"Unsupported session database version: {version}")
             if version == 0:
                 connection.execute("BEGIN IMMEDIATE")
@@ -53,6 +53,44 @@ class SQLiteSessionDatabase:
                         BEFORE DELETE ON session_entries BEGIN
                         SELECT RAISE(ABORT, 'Session entries are immutable'); END""")
                     connection.execute("PRAGMA user_version = 1")
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+            if version < 2:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute("""CREATE TABLE IF NOT EXISTS topics (
+                        session_id TEXT NOT NULL REFERENCES sessions(session_id), topic_id TEXT NOT NULL,
+                        parent_topic_id TEXT, anchor_entry_id TEXT, title TEXT NOT NULL,
+                        PRIMARY KEY(session_id, topic_id),
+                        FOREIGN KEY(session_id, parent_topic_id) REFERENCES topics(session_id, topic_id),
+                        FOREIGN KEY(session_id, anchor_entry_id) REFERENCES session_entries(session_id, id))""")
+                    connection.execute("""CREATE TABLE IF NOT EXISTS topic_selection (
+                        session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), topic_id TEXT NOT NULL,
+                        FOREIGN KEY(session_id, topic_id) REFERENCES topics(session_id, topic_id))""")
+                    connection.execute("""CREATE TABLE IF NOT EXISTS topic_requests (
+                        session_id TEXT NOT NULL, request_id TEXT NOT NULL, topic_id TEXT NOT NULL,
+                        topic_path TEXT NOT NULL, PRIMARY KEY(session_id, request_id),
+                        FOREIGN KEY(session_id, topic_id) REFERENCES topics(session_id, topic_id))""")
+                    connection.execute("""CREATE TABLE IF NOT EXISTS entry_requests (
+                        session_id TEXT NOT NULL, entry_id TEXT NOT NULL, request_id TEXT NOT NULL,
+                        PRIMARY KEY(session_id, entry_id),
+                        FOREIGN KEY(session_id, entry_id) REFERENCES session_entries(session_id, id),
+                        FOREIGN KEY(session_id, request_id) REFERENCES topic_requests(session_id, request_id))""")
+                    connection.execute("CREATE INDEX IF NOT EXISTS topic_request_lookup ON topic_requests(session_id, topic_id)")
+                    connection.execute("PRAGMA user_version = 2")
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+            if version < 3:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {row[1] for row in connection.execute("PRAGMA table_info(topic_requests)")}
+                    if "continuation_entry_id" not in columns:
+                        connection.execute("ALTER TABLE topic_requests ADD COLUMN continuation_entry_id TEXT")
+                    connection.execute("PRAGMA user_version = 3")
                     connection.commit()
                 except BaseException:
                     connection.rollback()

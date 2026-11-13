@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Octo · 把想法变成下一步",
-  description: "Octo 桌面会话界面预览",
+  title: "Octo · 话题地图",
+  description: "连接终端会话，整理话题与消息记录",
   icons: { icon: "/octo-mark-black.png" },
 };
 

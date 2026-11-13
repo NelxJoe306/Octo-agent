@@ -130,15 +130,13 @@ from octo_coding.provider_config import (
 from octo_coding.provider_runtime import ClosableModelProvider, create_model_provider
 from octo_coding.resources import ResourceDiagnostic, OctoResourcePaths
 from octo_coding.session import (
-    TREE_RUNNING_MESSAGE,
     CodingSession,
     CodingSessionConfig,
     ModelChoice,
-    SessionTreeBranchResult,
-    SessionTreeChoice,
     is_context_overflow_error,
     parse_terminal_command,
 )
+from octo_coding.topic_web import TopicWeb
 from octo_coding.session_manager import CodingSessionRecord, SessionManager
 from octo_coding.session_preparation import prepare_coding_session
 from octo_coding.shell_config import load_shell_settings
@@ -2010,343 +2008,6 @@ class SkillPickerScreen(ModalScreen[SkillPickerResult | None]):
         self.query_one("#skill-picker-help", Static).update(help_text)
 
 
-@dataclass(frozen=True, slots=True)
-class TreePickerResult:
-
-
-    entry_id: str
-    summarize: bool = False
-    custom_instructions: str | None = None
-
-
-class _TreePickerListItem(ListItem):
-
-
-    def __init__(
-        self,
-        choice: SessionTreeChoice,
-        *,
-        theme: TuiTheme,
-        show_label_timestamp: bool = False,
-    ) -> None:
-        self.choice = choice
-        self.theme = theme
-        self.show_label_timestamp = show_label_timestamp
-        super().__init__(
-            Label(
-                _tree_picker_label(
-                    choice,
-                    theme=theme,
-                    show_label_timestamp=show_label_timestamp,
-                ),
-                markup=False,
-            )
-        )
-
-    def watch_highlighted(self, value: bool) -> None:
-
-        super().watch_highlighted(value)
-        self.query_one(Label).update(
-            _tree_picker_label(
-                self.choice,
-                theme=self.theme,
-                highlighted=value,
-                show_label_timestamp=self.show_label_timestamp,
-            )
-        )
-
-
-class TreePickerScreen(ModalScreen[TreePickerResult | None]):
-
-
-    BINDINGS: ClassVar[list[BindingEntry]] = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("up", "cursor_up", "Up", show=False),
-        Binding("down", "cursor_down", "Down", show=False),
-        Binding("enter", "select_cursor", "Branch", show=False),
-        Binding("s", "select_with_summary", "Summarize", show=False),
-        Binding("c", "select_with_custom_summary", "Custom summary", show=False),
-        Binding("ctrl+t", "toggle_tool_calls", "Tool calls", show=False),
-        Binding("l", "edit_label", "Label", show=False),
-        Binding("ctrl+f", "toggle_labeled_only", "Labeled", show=False),
-        Binding("ctrl+l", "toggle_label_timestamps", "Label time", show=False),
-    ]
-
-    def __init__(
-        self,
-        choices: Sequence[SessionTreeChoice],
-        *,
-        theme: TuiTheme,
-        on_label_change: Callable[[str, str | None], Awaitable[float]] | None = None,
-    ) -> None:
-        super().__init__()
-        self.choices = tuple(choices)
-        self.theme = theme
-        self.on_label_change = on_label_change
-        self.show_tool_calls = True
-        self.labeled_only = False
-        self.show_label_timestamps = False
-
-    def compose(self) -> ComposeResult:
-
-        with Vertical(id="tree-picker"):
-            yield Static("Session Tree", id="tree-picker-title")
-            yield ListView(
-                *self._list_items(),
-                id="tree-picker-list",
-            )
-            yield Static(
-                self._help_text(),
-                id="tree-picker-help",
-            )
-
-    def on_mount(self) -> None:
-
-        tree_list = self.query_one("#tree-picker-list", ListView)
-        tree_list.index = _active_tree_choice_index(self.choices)
-        tree_list.focus()
-
-    def on_key(self, event: Key) -> None:
-
-        if event.key == "up":
-            event.stop()
-            self.action_cursor_up()
-        elif event.key == "down":
-            event.stop()
-            self.action_cursor_down()
-        elif event.key == "enter":
-            event.stop()
-            self.action_select_cursor()
-        elif event.key == "s":
-            event.stop()
-            self.action_select_with_summary()
-        elif event.key == "c":
-            event.stop()
-            self.action_select_with_custom_summary()
-        elif event.key == "ctrl+t":
-            event.stop()
-            self.action_toggle_tool_calls()
-        elif event.key == "l":
-            event.stop()
-            self.action_edit_label()
-        elif event.key == "ctrl+f":
-            event.stop()
-            self.action_toggle_labeled_only()
-        elif event.key == "ctrl+l":
-            event.stop()
-            self.action_toggle_label_timestamps()
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-
-        self.dismiss(TreePickerResult(entry_id=self._visible_choices()[event.index].entry_id))
-
-    def action_cursor_up(self) -> None:
-
-        self.query_one("#tree-picker-list", ListView).action_cursor_up()
-
-    def action_cursor_down(self) -> None:
-
-        self.query_one("#tree-picker-list", ListView).action_cursor_down()
-
-    def action_select_cursor(self) -> None:
-
-        self.query_one("#tree-picker-list", ListView).action_select_cursor()
-
-    def action_select_with_summary(self) -> None:
-
-        tree_list = self.query_one("#tree-picker-list", ListView)
-        index = tree_list.index
-        if index is None:
-            return
-        self.dismiss(
-            TreePickerResult(entry_id=self._visible_choices()[index].entry_id, summarize=True)
-        )
-
-    def action_select_with_custom_summary(self) -> None:
-
-        tree_list = self.query_one("#tree-picker-list", ListView)
-        index = tree_list.index
-        if index is None:
-            return
-        self.app.push_screen(
-            BranchSummaryInstructionsScreen(theme=self.theme),
-            callback=lambda instructions: self._dismiss_with_custom_summary(index, instructions),
-        )
-
-    def _dismiss_with_custom_summary(self, index: int, instructions: str | None) -> None:
-        if instructions is None:
-            return
-        visible_choices = self._visible_choices()
-        if index >= len(visible_choices):
-            return
-        self.dismiss(
-            TreePickerResult(
-                entry_id=visible_choices[index].entry_id,
-                summarize=True,
-                custom_instructions=instructions,
-            )
-        )
-
-    def action_toggle_tool_calls(self) -> None:
-
-        selected_entry_id = self._selected_entry_id()
-        self.show_tool_calls = not self.show_tool_calls
-        self.run_worker(self._refresh_choices(selected_entry_id=selected_entry_id))
-
-    def action_toggle_labeled_only(self) -> None:
-
-        selected_entry_id = self._selected_entry_id()
-        self.labeled_only = not self.labeled_only
-        self.run_worker(self._refresh_choices(selected_entry_id=selected_entry_id))
-
-    def action_toggle_label_timestamps(self) -> None:
-
-        selected_entry_id = self._selected_entry_id()
-        self.show_label_timestamps = not self.show_label_timestamps
-        self.run_worker(self._refresh_choices(selected_entry_id=selected_entry_id))
-
-    def action_edit_label(self) -> None:
-
-        selected = self._selected_choice()
-        if selected is None:
-            return
-        self.app.push_screen(
-            ExtensionInputScreen(
-                "Label this session entry",
-                "Empty clears the label",
-                theme=self.theme,
-                value=selected.bookmark_label or "",
-            ),
-            callback=lambda value: self._handle_label_input(selected.entry_id, value),
-        )
-
-    def _handle_label_input(self, entry_id: str, value: str | None) -> None:
-        if value is None:
-            return
-        self.run_worker(self._apply_label(entry_id, value))
-
-    async def _apply_label(self, entry_id: str, value: str) -> None:
-        normalized = value.strip() or None
-        try:
-            if self.on_label_change is None:
-                raise RuntimeError("Session labels are not available.")
-            timestamp = await self.on_label_change(entry_id, normalized)
-        except Exception as exc:
-            self.app.notify(f"Error: {exc}", severity="error")
-            return
-        self.choices = tuple(
-            replace(
-                choice,
-                bookmark_label=normalized,
-                label_timestamp=timestamp if normalized is not None else None,
-            )
-            if choice.entry_id == entry_id
-            else choice
-            for choice in self.choices
-        )
-        await self._refresh_choices(selected_entry_id=entry_id)
-
-    async def _refresh_choices(self, *, selected_entry_id: str | None = None) -> None:
-        selected_entry_id = selected_entry_id or self._selected_entry_id()
-        tree_list = self.query_one("#tree-picker-list", ListView)
-        await tree_list.clear()
-        await tree_list.extend(self._list_items())
-        visible_choices = self._visible_choices()
-        tree_list.index = (
-            _tree_choice_index(visible_choices, selected_entry_id) if visible_choices else None
-        )
-        self.query_one("#tree-picker-help", Static).update(self._help_text())
-
-    def _selected_entry_id(self) -> str | None:
-        tree_list = self.query_one("#tree-picker-list", ListView)
-        index = tree_list.index
-        visible_choices = self._visible_choices()
-        if index is None or index >= len(visible_choices):
-            return None
-        return visible_choices[index].entry_id
-
-    def _selected_choice(self) -> SessionTreeChoice | None:
-        entry_id = self._selected_entry_id()
-        return next((choice for choice in self.choices if choice.entry_id == entry_id), None)
-
-    def _visible_choices(self) -> tuple[SessionTreeChoice, ...]:
-        return tuple(
-            choice
-            for choice in self.choices
-            if (self.show_tool_calls or not choice.is_tool_call)
-            and (not self.labeled_only or choice.bookmark_label is not None)
-        )
-
-    def _list_items(self) -> list[ListItem]:
-        return [
-            _TreePickerListItem(
-                choice,
-                theme=self.theme,
-                show_label_timestamp=self.show_label_timestamps,
-            )
-            for choice in self._visible_choices()
-        ]
-
-    def _help_text(self) -> str:
-        tool_call_state = "shown" if self.show_tool_calls else "hidden"
-        labeled_state = "only" if self.labeled_only else "all"
-        time_state = "shown" if self.show_label_timestamps else "hidden"
-        return (
-            "Enter branch · L label/clear · S summary · C custom · "
-            f"Ctrl+T tool calls {tool_call_state} · Ctrl+F labels {labeled_state} · "
-            f"Ctrl+L times {time_state} · Esc close"
-        )
-
-    def action_cancel(self) -> None:
-
-        self.dismiss(None)
-
-
-class BranchSummaryInstructionsScreen(ModalScreen[str | None]):
-
-
-    BINDINGS: ClassVar[list[BindingEntry]] = [Binding("escape", "cancel", "Cancel")]
-
-    def __init__(self, *, theme: TuiTheme) -> None:
-        super().__init__()
-        self.theme = theme
-
-    def compose(self) -> ComposeResult:
-
-        with Vertical(id="branch-summary-instructions"):
-            yield Static(
-                "Custom summarization instructions",
-                id="branch-summary-instructions-title",
-            )
-            yield TextArea(id="branch-summary-instructions-input")
-            yield Static(
-                "Ctrl+Enter submits - Escape returns to tree",
-                id="branch-summary-instructions-help",
-            )
-
-    def on_mount(self) -> None:
-
-        self.query_one("#branch-summary-instructions-input", TextArea).focus()
-
-    def on_key(self, event: Key) -> None:
-
-        if event.key == "ctrl+enter":
-            event.stop()
-            self.action_submit()
-        elif event.key == "escape":
-            event.stop()
-            self.action_cancel()
-
-    def action_submit(self) -> None:
-
-        value = self.query_one("#branch-summary-instructions-input", TextArea).text.strip()
-        self.dismiss(value or None)
-
-    def action_cancel(self) -> None:
-
-        self.dismiss(None)
-
-
 class CommandOutputScroll(VerticalScroll):
 
 
@@ -3717,7 +3378,6 @@ class OctoTuiApp(App[None]):
     PromptTemplatePickerScreen,
     PromptTemplateEditorScreen,
     SkillPickerScreen,
-    TreePickerScreen,
     ToolsReferenceScreen,
     CommandOutputScreen {
         align: center middle;
@@ -3727,7 +3387,6 @@ class OctoTuiApp(App[None]):
     #prompt-template-picker,
     #prompt-template-editor,
     #skill-picker,
-    #tree-picker,
     #tools-reference {
         width: 76;
         max-width: 90%;
@@ -3742,7 +3401,6 @@ class OctoTuiApp(App[None]):
     #prompt-template-picker-title,
     #prompt-template-editor-title,
     #skill-picker-title,
-    #tree-picker-title,
     #tools-reference-title {
         height: 1;
         color: $octo-chrome-text;
@@ -3787,7 +3445,6 @@ class OctoTuiApp(App[None]):
     #session-picker-list,
     #prompt-template-picker-list,
     #skill-picker-list,
-    #tree-picker-list,
     #tools-reference-list {
         height: auto;
         max-height: 16;
@@ -3843,15 +3500,10 @@ class OctoTuiApp(App[None]):
     #prompt-template-picker-help,
     #prompt-template-editor-help,
     #skill-picker-help,
-    #tree-picker-help,
     #tools-reference-help {
         height: 1;
         margin-top: 1;
         color: $octo-muted-text;
-    }
-
-    #tree-picker-help {
-        height: auto;
     }
 
     ExtensionSelectScreen,
@@ -4308,6 +3960,8 @@ class OctoTuiApp(App[None]):
         self._extension_slot_widgets: dict[str, Widget] = {}
         self._extension_slot_mounted: dict[str, Widget] = {}
         self._extension_slot_slot_ids: dict[str, str] = {}
+        self._topic_web: TopicWeb | None = None
+        self._topic_unsubscribe = None
         self._extension_slot_locks: dict[str, asyncio.Lock] = {}
         self._extension_key_interceptors: list[KeyInterceptor] = []
         self._extension_sidebar_contributions: dict[tuple[str, str], _SidebarContribution] = {}
@@ -4467,6 +4121,7 @@ class OctoTuiApp(App[None]):
 
                 yield Container(id="main-slot")
                 yield Container(id="above-prompt-slot")
+                yield Static("", id="topic-indicator", markup=False)
                 yield Static("", id="queued-messages")
                 with Horizontal(id="prompt-row"):
                     yield Static("Octo", id="prompt-prefix")
@@ -4485,6 +4140,9 @@ class OctoTuiApp(App[None]):
 
     async def on_mount(self) -> None:
 
+        subscribe = getattr(self.session, "subscribe_topics", None)
+        if callable(subscribe):
+            self._topic_unsubscribe = subscribe(lambda: self.call_later(self._refresh_chrome_if_mounted))
         prompt = self.query_one(PromptInput)
         prompt.shell_mode_style = self.tui_settings.resolved_theme.role_styles["tool"].border
         self._sync_prompt_shell_mode(prompt.text)
@@ -4518,6 +4176,10 @@ class OctoTuiApp(App[None]):
         await super().on_event(event)
 
     def on_unmount(self) -> None:
+        if self._topic_web is not None:
+            self._topic_web.close()
+        if self._topic_unsubscribe is not None:
+            self._topic_unsubscribe()
 
         if self._activity_timer is not None:
             self._activity_timer.stop()
@@ -4698,6 +4360,20 @@ class OctoTuiApp(App[None]):
 
         command = self.session.handle_command(text)
         if command.handled:
+            if command.topic_arguments is not None:
+                try:
+                    command = replace(command, message=await self.session.topic_command(command.topic_arguments))
+                except ValueError as exc:
+                    command = replace(command, message=str(exc))
+            if command.map_requested:
+                try:
+                    if self._topic_web is None:
+                        self._topic_web = TopicWeb(self.session)
+                    import webbrowser
+                    opened = await asyncio.to_thread(webbrowser.open, self._topic_web.url)
+                    command = replace(command, message=("话题树已连接当前终端：" if opened else "请在浏览器打开话题树：") + self._topic_web.url)
+                except (ValueError, OSError) as exc:
+                    command = replace(command, message=str(exc))
             if command.clear_requested:
                 self.state.clear()
             if command.reload_requested:
@@ -4745,13 +4421,6 @@ class OctoTuiApp(App[None]):
                 self.action_open_session_picker()
             if command.prompts_picker_requested:
                 self._open_prompt_template_picker()
-            if command.tree_picker_requested:
-                if self._is_agent_or_queue_active():
-                    prompt.text = raw_text
-                    prompt.move_cursor(_text_end_location(raw_text))
-                    self._notify(TREE_RUNNING_MESSAGE, severity="warning")
-                    return
-                await self._open_tree_picker()
             if command.login_picker_requested:
                 self._open_login_picker()
             if command.custom_provider_login_requested:
@@ -4801,7 +4470,9 @@ class OctoTuiApp(App[None]):
                 self._set_tui_theme(command.theme)
             self.state.set_skills(self.session.skills)
             if command.message:
-                if _command_message_uses_notification(text, command.message):
+                if command.topic_arguments is not None or command.map_requested:
+                    self._append_command_message(text, command.message)
+                elif _command_message_uses_notification(text, command.message):
                     self._notify(command.message)
                 elif _command_message_uses_transcript(text):
                     self._append_command_message(
@@ -4906,7 +4577,8 @@ class OctoTuiApp(App[None]):
             self._optimistic_user_messages.append((run_id, text))
             await self._append_optimistic_user_message(text)
         self._prompt_worker = self.run_worker(
-            self._run_prompt(text, run_id, source=source, custom_type=custom_type, details=details),
+            self._run_prompt(text, run_id, source=source, custom_type=custom_type, details=details,
+                             topic_id=getattr(self.session, "current_topic_id", "main")),
             exclusive=True,
         )
 
@@ -5677,12 +5349,13 @@ class OctoTuiApp(App[None]):
         source: Literal["interactive", "extension"] = "interactive",
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
+        topic_id: str | None = None,
     ) -> None:
 
         active_run_id = self._prompt_run_id if run_id is None else run_id
         try:
             async for event in self.session.prompt(
-                text, source=source, custom_type=custom_type, details=details
+                text, source=source, custom_type=custom_type, details=details, topic_id=topic_id
             ):
                 if active_run_id != self._prompt_run_id:
                     return
@@ -5934,7 +5607,6 @@ class OctoTuiApp(App[None]):
             SessionPickerScreen
             | PromptTemplatePickerScreen
             | SkillPickerScreen
-            | TreePickerScreen
             | LoginMethodPickerScreen
             | LoginProviderPickerScreen
             | ThemePickerScreen
@@ -5976,7 +5648,6 @@ class OctoTuiApp(App[None]):
             SessionPickerScreen
             | PromptTemplatePickerScreen
             | SkillPickerScreen
-            | TreePickerScreen
             | LoginMethodPickerScreen
             | LoginProviderPickerScreen
             | ThemePickerScreen
@@ -6015,7 +5686,6 @@ class OctoTuiApp(App[None]):
             SessionPickerScreen
             | PromptTemplatePickerScreen
             | SkillPickerScreen
-            | TreePickerScreen
             | LoginMethodPickerScreen
             | LoginProviderPickerScreen
             | ThemePickerScreen
@@ -6293,96 +5963,6 @@ class OctoTuiApp(App[None]):
             if current_cwd != previous_cwd:
                 resume_message = f"{resume_message} ({_short_path(current_cwd)})"
             self._notify(resume_message)
-        except Exception as exc:
-            self._notify(f"Error: {exc}", severity="error")
-        self._refresh()
-
-    async def _open_tree_picker(self) -> None:
-        if self._is_agent_or_queue_active():
-            self._notify(TREE_RUNNING_MESSAGE, severity="warning")
-            return
-        tree_choices = getattr(self.session, "tree_choices", None)
-        if tree_choices is None:
-            self._notify("Session tree is not available.", severity="warning")
-            return
-        try:
-            choices = tuple(await tree_choices())
-        except Exception as exc:
-            self._notify(f"Error: {exc}", severity="error")
-            return
-        if not choices:
-            self._notify("No session entries are available for branching.", severity="warning")
-            return
-        self.push_screen(
-            TreePickerScreen(
-                choices,
-                theme=self.tui_settings.resolved_theme,
-                on_label_change=self._set_tree_label,
-            ),
-            callback=self._handle_tree_picker_result,
-        )
-
-    async def _set_tree_label(self, entry_id: str, label: str | None) -> float:
-        set_label = getattr(self.session, "set_label", None)
-        if set_label is None:
-            raise RuntimeError("Session labels are not available.")
-        entry = set_label(entry_id, label)
-        if isawaitable(entry):
-            entry = await entry
-        self._notify("Label cleared." if label is None else f"Label set to [{label}].")
-        return float(entry.timestamp)
-
-    def _handle_tree_picker_result(self, result: TreePickerResult | None) -> None:
-        if result is None:
-            return
-        self.run_worker(
-            self._branch_to_tree_entry(
-                result.entry_id,
-                summarize=result.summarize,
-                custom_instructions=result.custom_instructions,
-            ),
-            exclusive=False,
-        )
-
-    async def _branch_to_tree_entry(
-        self,
-        entry_id: str,
-        *,
-        summarize: bool,
-        custom_instructions: str | None = None,
-    ) -> None:
-        if self._is_agent_or_queue_active():
-            self._notify(TREE_RUNNING_MESSAGE, severity="warning")
-            return
-        branch_to_entry = getattr(self.session, "branch_to_entry", None)
-        if branch_to_entry is None:
-            self._notify("Session tree is not available.", severity="warning")
-            return
-        try:
-            if summarize:
-                self.state.clear()
-                self.state.add_item("status", "Summarizing branch…")
-                self._refresh()
-
-            result = branch_to_entry(
-                entry_id,
-                summarize=summarize,
-                custom_instructions=custom_instructions,
-            )
-            if isawaitable(result):
-                result = await result
-            self.state.clear()
-            self.state.set_skills(self.session.skills)
-            self._load_session_messages_from_session()
-            if isinstance(result, SessionTreeBranchResult):
-                if result.input_prefill is not None:
-                    prompt = self.query_one("#prompt", PromptInput)
-                    prompt.value = result.input_prefill
-                    prompt.move_cursor(_text_end_location(result.input_prefill))
-                    prompt.focus()
-                self._notify(result.message)
-            elif isinstance(result, str):
-                self._notify(result)
         except Exception as exc:
             self._notify(f"Error: {exc}", severity="error")
         self._refresh()
@@ -6968,6 +6548,9 @@ class OctoTuiApp(App[None]):
         self._sync_session_title()
         self._sync_text_selection_state()
         self._sync_queue_state()
+        topic = self.query_one("#topic-indicator", Static)
+        topic.update("当前话题：" + getattr(self.session, "current_topic_path", "主线"))
+        topic.styles.color = theme.muted_text
         sidebar = self.query_one("#sidebar", SessionSidebar)
         sidebar.update_from_session(self.session, theme=theme)
         if self._extension_sidebar_theme != theme:
@@ -7522,51 +7105,6 @@ def _filter_session_records(
         for record in records
         if normalized in (record.title or "").casefold() or normalized in record.model.casefold()
     )
-
-
-def _tree_picker_label(
-    choice: SessionTreeChoice,
-    *,
-    theme: TuiTheme,
-    highlighted: bool = False,
-    show_label_timestamp: bool = False,
-) -> Text:
-    marker = "* " if choice.active else "  "
-    label = choice.label
-    indent_width = len(label) - len(label.lstrip(" "))
-    indent = label[:indent_width]
-    body = label[indent_width:]
-    author, separator, rest = body.partition(":")
-    text = Text(f"{marker}{indent}")
-    if choice.bookmark_label is not None:
-        bookmark_color = theme.highlight_text if highlighted else theme.success
-        text.append(f"[{choice.bookmark_label}] ", style=bookmark_color)
-        if show_label_timestamp and choice.label_timestamp is not None:
-            timestamp = datetime.fromtimestamp(choice.label_timestamp).strftime("%Y-%m-%d %H:%M")
-            timestamp_color = theme.highlight_text if highlighted else theme.muted_text
-            text.append(f"{timestamp} ", style=timestamp_color)
-    if separator:
-        author_color = theme.highlight_text if highlighted else theme.accent
-        text.append(author, style=author_color)
-        text.append(f"{separator}{rest}")
-    else:
-        text.append(body)
-    return text
-
-
-def _active_tree_choice_index(choices: Sequence[SessionTreeChoice]) -> int:
-    return _tree_choice_index(choices, None)
-
-
-def _tree_choice_index(choices: Sequence[SessionTreeChoice], entry_id: str | None) -> int:
-    if entry_id is not None:
-        for index, choice in enumerate(choices):
-            if choice.entry_id == entry_id:
-                return index
-    for index, choice in enumerate(choices):
-        if choice.active:
-            return index
-    return 0
 
 
 def _session_updated_at_label(timestamp: float) -> str:

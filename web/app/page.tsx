@@ -1,647 +1,921 @@
 "use client";
 
-import { useEffect, useReducer, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 import {
-  ArrowUp,
+  ArrowUpRight,
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
   GitBranch,
-  Menu,
-  PanelRight,
-  PencilLine,
-  Pin,
-  PinOff,
+  Minus,
+  Moon,
   Plus,
+  RefreshCw,
   Search,
-  Settings2,
-  ShieldCheck,
-  Square,
+  Sun,
+  Terminal,
   X,
 } from "lucide-react";
-import {
-  chatReducer,
-  createPreviewState,
-  RequestId,
-  SessionId,
-} from "@/lib/chat";
-import type { Session } from "@/lib/chat";
 import { OctoMark } from "@/components/mark";
-import { defaultPreferences, Settings } from "@/components/settings";
-import type { SettingsTab } from "@/components/settings";
-import { useLocalModels } from "@/components/local-models";
-import { ModelPicker } from "@/components/model-picker";
 import { ResizeDivider } from "@/components/resize-divider";
-import { resolveSelection } from "@/lib/models";
-import type { ModelSelection } from "@/lib/models";
-import { fitWorkspace } from "@/lib/layout";
+import {
+  snapshotSchema,
+  topicId,
+  layoutRounds,
+  openTopicTab,
+} from "@/lib/topic-map";
+import type { Message, Snapshot, TopicCommand, TopicId } from "@/lib/topic-map";
 
-type LayoutStyle = CSSProperties & {
-  "--sidebar-width": string;
-  "--inspector-width": string;
-  "--drawer-width": string;
-};
+type Connection =
+  | { kind: "connecting" }
+  | { kind: "connected" }
+  | { kind: "disconnected"; reason: string };
+type Editor =
+  | { kind: "closed" }
+  | {
+      kind: "create";
+      session: Snapshot["session_id"];
+      parent: TopicId;
+      anchor: Message["id"] | null;
+    }
+  | {
+      kind: "rename";
+      session: Snapshot["session_id"];
+      topic: TopicId;
+      title: string;
+    };
 
 export default function Home() {
-  const [state, dispatch] = useReducer(
-    chatReducer,
-    undefined,
-    createPreviewState,
-  );
-  const [preferences, setPreferences] = useState(defaultPreferences);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [treeOpen, setTreeOpen] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [connection, setConnection] = useState<Connection>({
+    kind: "connecting",
+  });
+  const [tabs, setTabs] = useState<TopicId[]>([]);
   const [query, setQuery] = useState("");
-  const [plan, setPlan] = useState(false);
-  const models = useLocalModels();
-  const [chosen, setChosen] = useState<ModelSelection>({
-    modelId: null,
-    effort: null,
-  });
-  const selection = resolveSelection(models.config, chosen);
-  const model = models.config.models.find(
-    (item) => item.id === selection.modelId,
-  );
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
-  const [leftWidth, setLeftWidth] = useState(248);
-  const [rightWidth, setRightWidth] = useState(276);
-  const [resizing, setResizing] = useState(false);
-  const [windowWidth, setWindowWidth] = useState(0);
-  const appRef = useRef<HTMLElement>(null);
-  const layout = fitWorkspace({
-    width: windowWidth,
-    left: leftWidth,
-    right: rightWidth,
-    treeOpen,
-  });
-  const leftMax = layout.leftMax;
-  const rightMax = layout.rightMax;
-  const drawerOpen = layout.kind !== "wide" && sidebarOpen;
-  const treeOnly = layout.kind === "narrow" && treeOpen;
-  const layoutStyle: LayoutStyle = {
-    "--sidebar-width": `${layout.left}px`,
-    "--inspector-width": `${layout.right}px`,
-    "--drawer-width": `${layout.drawerWidth}px`,
-  };
-  const [toast, setToast] = useState("");
-  const [attachment, setAttachment] = useState("");
-  const [unread, setUnread] = useState(false);
-  const followingRef = useRef(true);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const messagesRef = useRef<HTMLDivElement>(null);
-  const active = state.sessions.find((item) => item.id === state.activeId);
-  const draft = state.drafts[state.activeId ?? "new"] ?? "";
-  const requestId = state.run.kind === "running" ? state.run.requestId : null;
+  const [collapsed, setCollapsed] = useState(new Set<string>());
+  const [zoom, setZoom] = useState(1);
+  const [treeWidth, setTreeWidth] = useState(360);
+  const [width, setWidth] = useState(0);
+  const [mobile, setMobile] = useState<"tree" | "records">("tree");
+  const [dragging, setDragging] = useState(false);
+  const [dark, setDark] = useState(false);
+  const [editor, setEditor] = useState<Editor>({ kind: "closed" });
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const frame = useRef<HTMLDivElement>(null);
+  const token = useRef("");
+  const serial = useRef(0);
+  const view = useRef<{
+    session?: Snapshot["session_id"];
+    topic?: TopicId;
+    before?: number;
+  }>({});
+  const dialog = useRef<HTMLDialogElement>(null);
+
+  async function request(path: string, command?: TopicCommand) {
+    const response = await fetch(path, {
+      method: command ? "POST" : "GET",
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      headers: {
+        "X-Octo-Token": token.current,
+        ...(command ? { "Content-Type": "application/json" } : {}),
+      },
+      body: command ? JSON.stringify(command) : undefined,
+    });
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => null);
+      const parsed = z.object({ error: z.string() }).safeParse(payload);
+      throw new Error(
+        parsed.success
+          ? parsed.data.error
+          : "无法连接当前终端，请在终端输入 /map",
+      );
+    }
+    const payload: unknown = await response.json();
+    return payload;
+  }
+
+  async function load(
+    next: {
+      session?: Snapshot["session_id"];
+      topic?: TopicId;
+      before?: number;
+    } = view.current,
+    openTab = false,
+  ) {
+    const oldSession = view.current.session;
+    view.current = next;
+    const revision = ++serial.current;
+    try {
+      const params = new URLSearchParams();
+      if (next.topic) params.set("topic_id", next.topic);
+      if (next.before) params.set("before", String(next.before));
+      let data: unknown;
+      try {
+        data = await request(`/api/snapshot?${params}`);
+      } catch (cause) {
+        if (!(cause instanceof Error) || cause.message !== "Unknown topic")
+          throw cause;
+        data = await request("/api/snapshot");
+      }
+      let parsed = snapshotSchema.parse(data);
+      const replaced =
+        oldSession !== undefined && oldSession !== parsed.session_id;
+      if (replaced)
+        parsed = snapshotSchema.parse(await request("/api/snapshot"));
+      if (revision !== serial.current) return;
+      view.current = {
+        session: parsed.session_id,
+        topic: parsed.viewed_topic_id,
+        before: replaced ? undefined : next.before,
+      };
+      if (replaced) {
+        setCollapsed(new Set());
+        setEditor({ kind: "closed" });
+        setHighlight(null);
+      }
+      setTabs((previous) => {
+        const existing = replaced ? [] : previous;
+        return openTab
+          ? openTopicTab(existing, parsed.viewed_topic_id)
+          : existing;
+      });
+      setSnapshot(parsed);
+      setConnection({ kind: "connected" });
+    } catch (cause) {
+      if (revision === serial.current)
+        setConnection({
+          kind: "disconnected",
+          reason: cause instanceof Error ? cause.message : "连接失败",
+        });
+    }
+  }
 
   useEffect(() => {
-    const element = appRef.current;
-    if (!element) return;
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) setWindowWidth(entry.contentRect.width);
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    const passed = fragment.get("token");
+    if (passed) {
+      sessionStorage.setItem("octo-map-token", passed);
+      history.replaceState(null, "", location.pathname);
+    }
+    token.current = passed ?? sessionStorage.getItem("octo-map-token") ?? "";
+    if (!token.current) {
+      setConnection({
+        kind: "disconnected",
+        reason: "在运行中的 Octo 终端输入 /map，即可连接当前会话。",
+      });
+      return;
+    }
+    let disposed = false;
+    const stream = new EventSource(
+      `/api/events?token=${encodeURIComponent(token.current)}`,
+    );
+    stream.onmessage = () => {
+      if (!disposed) void load();
+    };
+    stream.onerror = () => {
+      if (!disposed)
+        setConnection({
+          kind: "disconnected",
+          reason: "终端连接已断开，正在重新连接…",
+        });
+    };
+    void load();
+    return () => {
+      disposed = true;
+      ++serial.current;
+      stream.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!frame.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setWidth(entry.contentRect.width);
     });
-    observer.observe(element);
+    observer.observe(frame.current);
     return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
-    if (windowWidth > 0 && windowWidth < 600) setTreeOpen(false);
-  }, [windowWidth]);
-  useEffect(() => {
-    if (!drawerOpen) return;
-    const prior = document.activeElement;
-    appRef.current?.querySelector<HTMLButtonElement>(".new-chat")?.focus();
-    return () => {
-      if (prior instanceof HTMLElement) prior.focus();
-    };
-  }, [drawerOpen]);
+    if (editor.kind === "closed") dialog.current?.close();
+    else if (!dialog.current?.open) dialog.current?.showModal();
+  }, [editor]);
 
   useEffect(() => {
-    if (!requestId) return;
-    const timer = setInterval(
-      () => dispatch({ kind: "tick", requestId }),
-      { slow: 90, normal: 35, fast: 12 }[preferences.speed],
-    );
-    return () => clearInterval(timer);
-  }, [requestId, preferences.speed]);
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      document.documentElement.dataset.theme =
-        preferences.theme === "system"
-          ? media.matches
-            ? "dark"
-            : "light"
-          : preferences.theme;
-    };
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, [preferences.theme]);
-  useEffect(() => {
-    document.documentElement.style.setProperty(
-      "--chat-font-size",
-      `${preferences.fontSize}px`,
-    );
-  }, [preferences.fontSize]);
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(""), 2600);
-    return () => clearTimeout(timer);
-  }, [toast]);
-  useEffect(() => {
-    if (searchOpen) searchRef.current?.focus();
-  }, [searchOpen, drawerOpen]);
-  useEffect(() => {
-    function key(event: KeyboardEvent) {
-      if (!(event.ctrlKey || event.metaKey) || settingsOpen) return;
-      if (event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setSearchOpen(true);
-        if (layout.kind !== "wide") setSidebarOpen(true);
-      }
-      if (event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        newChat();
-      }
+    if (highlight)
+      document
+        .getElementById("entry-" + highlight)
+        ?.scrollIntoView({ block: "center" });
+  }, [snapshot, highlight]);
+
+  async function locate(entry: Message["id"]) {
+    try {
+      const anchor = z
+        .object({
+          topic_id: topicId,
+          seq: z.number().int(),
+          entry_id: z.string(),
+        })
+        .parse(
+          await request("/api/anchor?entry_id=" + encodeURIComponent(entry)),
+        );
+      setMobile("records");
+      setHighlight(anchor.entry_id);
+      await load({ topic: anchor.topic_id, before: anchor.seq + 1 }, true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "无法定位原文");
     }
-    window.addEventListener("keydown", key);
-    return () => window.removeEventListener("keydown", key);
-  }, [settingsOpen, layout.kind]);
-  useEffect(() => {
-    followingRef.current = true;
-    setUnread(false);
-  }, [state.activeId]);
-  useEffect(() => {
-    const list = messagesRef.current;
-    if (!list) return;
-    if (followingRef.current) list.scrollTop = list.scrollHeight;
-    else setUnread(true);
-  }, [state.activeId, active?.messages.at(-1)?.text]);
-
-  function newChat() {
-    dispatch({ kind: "new" });
-    setSidebarOpen(false);
-    if (layout.kind === "narrow") setTreeOpen(false);
-    requestAnimationFrame(() => inputRef.current?.focus());
   }
-  function send() {
-    if (!draft.trim() || state.run.kind === "running") return;
-    followingRef.current = true;
-    setUnread(false);
-    dispatch({
-      kind: "send",
-      requestId: RequestId.parse(crypto.randomUUID()),
-      newSessionId: SessionId.parse(crypto.randomUUID()),
-      reply: `这是一条本地演示回复。\n\n已收到：${draft.trim().slice(0, 180)}\n\n你可以在生成过程中切换到其他会话，再回来查看结果；回复会保留在发送时的会话中。也可以点击停止按钮中断输出。\n\n${plan ? "规划模式" : "执行模式"} · ${model?.name ?? "未选择模型"}${selection.effort ? ` · 推理强度：${selection.effort}` : ""}\n\n这一版用于体验布局与交互，尚未连接 Octo 后端，也没有执行工具或系统命令。`,
+
+  const rows = snapshot ? snapshot.topics : [];
+  const tree = layoutRounds(
+    snapshot?.topics ?? [],
+    snapshot?.turns ?? [],
+    collapsed,
+    query,
+  );
+  const selected = snapshot?.topics.find(
+    (topic) => topic.id === snapshot.viewed_topic_id,
+  );
+  const current = snapshot?.topics.find(
+    (topic) => topic.id === snapshot.selected_topic_id,
+  );
+  const split = width >= 780;
+  const maxWidth = Math.max(260, Math.min(640, width - 390));
+  const panelWidth = Math.max(260, Math.min(treeWidth, maxWidth));
+  const connected = connection.kind === "connected";
+
+  async function command(body: TopicCommand, target?: TopicId) {
+    setBusy(true);
+    setError("");
+    try {
+      const result = z
+        .object({ topic_id: topicId })
+        .parse(await request("/api/topics", body));
+      setEditor({ kind: "closed" });
+      setMobile("records");
+      await load({ topic: target ?? result.topic_id }, true);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "操作失败，请刷新检查结果",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function activateTopic(
+    id: TopicId,
+    entry: Message["id"] | null = null,
+  ) {
+    if (!snapshot || busy) return;
+    setHighlight(null);
+    await command({
+      action: "select",
+      session_id: snapshot.session_id,
+      topic_id: id,
+    });
+    if (entry) await locate(entry);
+  }
+  function create(anchor: Message["id"] | null = null) {
+    if (!selected || !snapshot) return;
+    setError("");
+    setTitle("");
+    setEditor({
+      kind: "create",
+      session: snapshot.session_id,
+      parent: selected.id,
+      anchor,
     });
   }
-  async function copy(text: string) {
+  async function copy(message: Message) {
     try {
-      await navigator.clipboard.writeText(text);
-      setToast("已复制回复");
+      await navigator.clipboard.writeText(message.text);
+      setCopied(message.id);
     } catch {
-      setToast("浏览器未允许复制，请选择文字复制");
+      setError("复制失败，可选中消息正文手动复制。");
     }
   }
-  function sessionRow(session: Session) {
-    return (
-      <div
-        key={session.id}
-        className={`session-row ${state.activeId === session.id ? "selected" : ""}`}
-      >
-        <button
-          className="session-select"
-          aria-current={state.activeId === session.id ? "page" : undefined}
-          title={session.title}
-          onClick={() => {
-            dispatch({ kind: "select", id: session.id });
-            setSidebarOpen(false);
-            if (layout.kind === "narrow") setTreeOpen(false);
-          }}
-        >
-          <span>{session.title}</span>
-          {state.run.kind === "running" &&
-            state.run.sessionId === session.id && (
-              <i className="running-dot" aria-label="正在生成" />
-            )}
-        </button>
-        <button
-          className="icon-button session-pin"
-          aria-label={`${session.pinned ? "取消置顶" : "置顶"} ${session.title}`}
-          onClick={() => dispatch({ kind: "pin", id: session.id })}
-        >
-          {session.pinned ? <PinOff size={12} /> : <Pin size={12} />}
-        </button>
-      </div>
-    );
-  }
-  const filtered = state.sessions.filter((item) =>
-    item.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
-  );
 
   return (
     <main
-      ref={appRef}
-      className="app"
-      data-sidebar={sidebarOpen}
-      data-layout={layout.kind}
-      data-resizing={resizing}
-      style={layoutStyle}
+      className={`map-app ${dragging ? "is-dragging" : ""}`}
+      data-theme={dark ? "dark" : "light"}
     >
-      {drawerOpen && (
-        <button
-          className="sidebar-backdrop"
-          aria-label="关闭会话导航遮罩"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
-      <aside
-        className="sidebar"
-        aria-label="会话列表"
-        role={layout.kind !== "wide" ? "dialog" : undefined}
-        aria-modal={drawerOpen ? true : undefined}
-        inert={layout.kind !== "wide" && !drawerOpen}
-        onKeyDown={(event) => {
-          if (!drawerOpen) return;
-          if (event.key === "Escape") {
-            event.preventDefault();
-            setSidebarOpen(false);
-          }
-          if (event.key === "Tab") {
-            const controls = Array.from(
-              event.currentTarget.querySelectorAll<HTMLElement>(
-                'button:not([disabled]),input:not([disabled]),[tabindex="0"]',
-              ),
-            ).filter((item) => item.getClientRects().length > 0);
-            const first = controls[0],
-              last = controls.at(-1);
-            if (event.shiftKey && document.activeElement === first) {
-              event.preventDefault();
-              last?.focus();
-            }
-            if (!event.shiftKey && document.activeElement === last) {
-              event.preventDefault();
-              first?.focus();
-            }
-          }
-        }}
-      >
-        <div className="brand-row">
-          <div className="brand">
-            <OctoMark />
-            <span className="wordmark">Octo</span>
-          </div>
+      <header className="topbar">
+        <div className="brand">
+          <OctoMark />
+          <strong>Octo</strong>
+          <span>话题地图</span>
+        </div>
+        <div className="top-actions">
+          <span className={`connection ${connected ? "online" : ""}`}>
+            <i />
+            {connected
+              ? "已连接终端"
+              : connection.kind === "connecting"
+                ? "正在连接"
+                : "未连接"}
+          </span>
           <button
             className="icon-button"
-            aria-label="搜索会话"
-            aria-expanded={searchOpen}
-            onClick={() => {
-              if (searchOpen) setQuery("");
-              setSearchOpen((value) => !value);
-            }}
+            aria-label="刷新话题"
+            onClick={() => void load()}
           >
-            <Search size={18} />
+            <RefreshCw size={17} />
           </button>
           <button
-            className="icon-button mobile-menu"
-            aria-label="关闭会话列表"
-            onClick={() => setSidebarOpen(false)}
+            className="icon-button"
+            aria-label={dark ? "切换浅色主题" : "切换深色主题"}
+            onClick={() => setDark(!dark)}
           >
-            <X size={17} />
+            {dark ? <Sun size={18} /> : <Moon size={18} />}
           </button>
         </div>
-        <button className="new-chat" onClick={newChat}>
-          <PencilLine size={18} />
-          <span>新对话</span>
-          <kbd>Ctrl N</kbd>
+      </header>
+      <div className="session-strip">
+        <Terminal size={17} />
+        <strong>{snapshot?.title ?? "连接你的终端会话"}</strong>
+        <span>终端当前：{current?.title ?? "—"}</span>
+        {snapshot?.running && (
+          <span className="running">
+            <i />
+            正在生成
+          </span>
+        )}
+      </div>
+      {connection.kind === "disconnected" && (
+        <div className="notice" role="status">
+          {connection.reason}
+          <button onClick={() => void load()}>重新连接</button>
+        </div>
+      )}
+      {error && editor.kind === "closed" && (
+        <div className="notice error" role="alert">
+          {error}
+          <button aria-label="关闭提示" onClick={() => setError("")}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
+      <div
+        className="branch-tabs"
+        role="tablist"
+        aria-label="已打开的话题"
+        onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+            return;
+          const buttons = Array.from(
+            event.currentTarget.querySelectorAll<HTMLButtonElement>(
+              "button[role=tab]",
+            ),
+          );
+          const current = buttons.findIndex(
+            (button) => button === document.activeElement,
+          );
+          if (current < 0) return;
+          event.preventDefault();
+          const next =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? buttons.length - 1
+                : (current +
+                    (event.key === "ArrowRight" ? 1 : -1) +
+                    buttons.length) %
+                  buttons.length;
+          buttons[next]?.focus();
+          buttons[next]?.click();
+        }}
+      >
+        <button
+          role="tab"
+          aria-selected={mobile === "tree"}
+          onClick={() => setMobile("tree")}
+        >
+          <GitBranch size={15} />
+          话题地图
         </button>
-        {searchOpen && (
-          <div className="search-box">
-            <Search size={13} />
+        {tabs.map((id) => {
+          const topic = snapshot?.topics.find((item) => item.id === id);
+          if (!topic) return null;
+          return (
+            <div
+              className={`branch-tab ${mobile === "records" && selected?.id === id ? "active" : ""}`}
+              key={id}
+            >
+              <button
+                role="tab"
+                disabled={busy || !connected}
+                aria-selected={mobile === "records" && selected?.id === id}
+                title={topic.title}
+                onClick={() => {
+                  setMobile("records");
+                  void activateTopic(id);
+                }}
+              >
+                {topic.title}
+              </button>
+              <button
+                className="close-tab"
+                aria-label={`关闭${topic.title}标签`}
+                onClick={() => {
+                  const index = tabs.indexOf(id);
+                  const remaining = tabs.filter((item) => item !== id);
+                  setTabs(remaining);
+                  if (selected?.id === id) {
+                    const neighbor = remaining[Math.max(0, index - 1)];
+                    if (neighbor) void activateTopic(neighbor);
+                    else setMobile("tree");
+                  }
+                }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div
+        ref={frame}
+        className={`workspace ${split ? "split" : "compact"} ${mobile === "tree" ? "map-surface" : "topic-surface"}`}
+      >
+        <section
+          className="tree-panel"
+          style={
+            mobile === "tree"
+              ? { width: "100%" }
+              : split
+                ? { width: panelWidth }
+                : { display: "none" }
+          }
+          aria-label="话题导航"
+        >
+          <div className="panel-heading">
+            <div>
+              <h1>沿着对话向下展开</h1>
+              <p>每个节点是一轮提问、回复与工具调用。</p>
+            </div>
+            <button
+              className="icon-button"
+              aria-label="新建子话题"
+              disabled={!connected || !selected || busy}
+              onClick={() => create()}
+            >
+              <Plus size={19} />
+            </button>
+          </div>
+          <label className="search">
+            <Search size={16} />
             <input
-              ref={searchRef}
-              aria-label="搜索会话标题"
-              placeholder="搜索会话…"
+              aria-label="搜索话题"
+              placeholder="查找一个话题…"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
-            <button
-              className="icon-button"
-              aria-label="清除搜索"
-              onClick={() => {
-                setQuery("");
-                setSearchOpen(false);
-              }}
-            >
-              <X size={12} />
-            </button>
-          </div>
-        )}
-        <nav className="session-nav" aria-label="会话导航">
-          <section className="nav-section">
-            <h2 className="section-heading">已置顶</h2>
-            {filtered.filter((item) => item.pinned).map(sessionRow)}
-          </section>
-          <section className="nav-section">
-            <h2 className="section-heading">最近对话</h2>
-            {filtered.filter((item) => !item.pinned).map(sessionRow)}
-            {!filtered.length && (
-              <p className="section-heading">没有匹配的会话</p>
-            )}
-          </section>
-        </nav>
-        <div className="sidebar-footer">
-          <div className="profile-dot">O</div>
-          <div className="profile-meta">
-            <strong>个人助手</strong>
-            <span>界面预览</span>
-          </div>
-          <button
-            className="icon-button"
-            aria-label="打开设置"
-            onClick={() => {
-              setSettingsTab("general");
-              setSettingsOpen(true);
-            }}
-          >
-            <Settings2 size={17} />
-          </button>
-        </div>
-        <ResizeDivider
-          side="left"
-          value={Math.min(leftWidth, leftMax)}
-          min={192}
-          max={leftMax}
-          onChange={setLeftWidth}
-          onDragging={setResizing}
-        />
-      </aside>
-      <section className="workspace" inert={drawerOpen}>
-        <header className="workspace-header">
-          <button
-            className="icon-button mobile-menu"
-            aria-label="打开会话列表"
-            onClick={() => setSidebarOpen(true)}
-          >
-            <Menu size={18} />
-          </button>
-          <span className="header-title">
-            {treeOnly ? "对话树" : (active?.title ?? "新对话")}
-          </span>
-          <span className="header-spacer" />
-          <span className="preview-badge">
-            <span className="status-dot" />
-            界面预览
-          </span>
-          <button
-            className="icon-button"
-            title={
-              treeOnly ? "返回对话" : treeOpen ? "收起右侧窗口" : "展开右侧窗口"
-            }
-            aria-label="切换右侧窗口"
-            aria-pressed={treeOpen}
-            aria-controls="tree-panel"
-            onClick={() => setTreeOpen((value) => !value)}
-          >
-            <PanelRight size={17} />
-            {treeOnly && <span>返回对话</span>}
-          </button>
-        </header>
-        <div className="workarea" data-tree={treeOpen}>
-          <section
-            className="conversation"
-            aria-label="对话内容"
-            hidden={treeOnly}
-            inert={treeOnly}
-          >
-            {!active ? (
-              <div className="empty-state">
-                <OctoMark />
-                <h1>今天，我们一起做点什么？</h1>
-                <p>聊聊你的想法，或继续一件还没做完的事。</p>
-              </div>
-            ) : (
+          </label>
+          <nav className="tree-scroll" aria-label="话题树">
+            {rows.length ? (
               <div
-                className="messages"
-                ref={messagesRef}
-                onScroll={(event) => {
-                  const list = event.currentTarget;
-                  followingRef.current =
-                    list.scrollHeight - list.scrollTop - list.clientHeight < 48;
-                  if (followingRef.current) setUnread(false);
+                className="tree-space"
+                style={{
+                  width: tree.width * zoom,
+                  height: tree.height * zoom,
                 }}
               >
-                {active.messages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`message ${message.role}`}
+                <div
+                  className="tree-nodes"
+                  style={{
+                    transform: `scale(${zoom})`,
+                    width: tree.width,
+                    height: tree.height,
+                  }}
+                >
+                  <svg
+                    className="tree-connections"
+                    width={tree.width}
+                    height={tree.height}
+                    aria-hidden="true"
                   >
-                    {message.role === "assistant" && (
-                      <div className="assistant-label">
-                        <OctoMark />
-                        Octo<span className="message-status">演示</span>
-                      </div>
-                    )}
-                    <div className="message-text">
-                      {message.text ||
-                        (message.status === "stopped" ? "已停止生成。" : "")}
-                      {message.status === "streaming" && (
-                        <span className="stream-cursor" aria-label="正在生成" />
-                      )}
-                    </div>
-                    {message.role === "assistant" && (
-                      <div className="message-toolbar">
-                        <button
-                          className="icon-button"
-                          aria-label="复制回复"
-                          onClick={() => copy(message.text)}
-                          disabled={!message.text}
-                        >
-                          <Copy size={13} />
-                        </button>
-                        <span className="message-status">
-                          {message.status === "stopped"
-                            ? "已停止"
-                            : message.status === "streaming"
-                              ? "正在生成…"
-                              : "本地示例"}
-                        </span>
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
-            )}
-            {unread && (
-              <button
-                className="new-content button"
-                onClick={() => {
-                  followingRef.current = true;
-                  setUnread(false);
-                  const list = messagesRef.current;
-                  if (list) list.scrollTop = list.scrollHeight;
-                }}
-              >
-                查看新内容 ↓
-              </button>
-            )}
-            <div className="composer-area">
-              <div className="composer-wrap">
-                <div className="composer">
-                  <textarea
-                    ref={inputRef}
-                    aria-label="输入消息"
-                    placeholder="给 Octo 发消息…"
-                    rows={2}
-                    value={draft}
-                    onChange={(event) =>
-                      dispatch({ kind: "draft", text: event.target.value })
-                    }
-                    onKeyDown={(event) => {
-                      if (
-                        event.key === "Enter" &&
-                        !event.shiftKey &&
-                        !event.nativeEvent.isComposing
-                      ) {
-                        event.preventDefault();
-                        send();
-                      }
-                    }}
-                  />
-                  <div className="composer-toolbar">
-                    <button
-                      className="icon-button"
-                      title="选择附件（仅预览文件名）"
-                      aria-label="选择附件"
-                      onClick={() => fileRef.current?.click()}
-                    >
-                      <Plus size={21} />
-                    </button>
-                    <input
-                      ref={fileRef}
-                      hidden
-                      type="file"
-                      onChange={(event) => {
-                        setAttachment(event.target.files?.[0]?.name ?? "");
-                        event.target.value = "";
-                      }}
-                    />
-                    <button
-                      className="composer-mode"
-                      aria-pressed={plan}
-                      title="模式切换仅用于界面预览"
-                      onClick={() => setPlan((value) => !value)}
-                    >
-                      <ShieldCheck size={14} />
-                      {plan ? "规划模式" : "执行模式"}
-                    </button>
-                    <span className="header-spacer" />
-                    <ModelPicker
-                      config={models.config}
-                      selection={selection}
-                      onChange={setChosen}
-                      onConfigure={() => {
-                        setSettingsTab("models");
-                        setSettingsOpen(true);
-                      }}
-                    />
-                    <button
-                      className="send-button"
-                      aria-label={requestId ? "停止生成" : "发送消息"}
-                      disabled={!requestId && !draft.trim()}
-                      onClick={() =>
-                        requestId ? dispatch({ kind: "stop" }) : send()
-                      }
-                    >
-                      {requestId ? (
-                        <Square size={12} fill="currentColor" />
-                      ) : (
-                        <ArrowUp size={17} />
-                      )}
-                    </button>
-                  </div>
-                  {attachment && (
-                    <div className="attachment-chip">
-                      <span>{attachment}</span>
-                      <small>仅本地预览 · 不会发送</small>
-                      <button
-                        className="icon-button"
-                        aria-label="移除附件"
-                        onClick={() => setAttachment("")}
+                    {tree.edges.map((edge) => (
+                      <path
+                        key={edge.id}
+                        d={edge.path}
+                        className={edge.trunk ? "trunk-edge" : "branch-edge"}
+                      />
+                    ))}
+                  </svg>
+                  {tree.nodes.map(
+                    ({
+                      topic,
+                      depth,
+                      hasChildren,
+                      x,
+                      y,
+                      id,
+                      title: turnTitle,
+                      entry_id,
+                      number,
+                      message_count,
+                      kind,
+                      isLatest,
+                    }) => (
+                      <div
+                        className={`topic-row node-${kind} depth-${depth} ${snapshot?.viewed_topic_id === topic.id && (highlight ? highlight === entry_id : isLatest) ? "viewed" : ""}`}
+                        key={id}
+                        style={{ left: x, top: y }}
                       >
-                        <X size={12} />
-                      </button>
-                    </div>
+                        {hasChildren ? (
+                          <button
+                            className="collapse"
+                            aria-label={`${collapsed.has(id) ? "展开" : "折叠"}${topic.title}`}
+                            aria-expanded={!collapsed.has(id)}
+                            onClick={() =>
+                              setCollapsed((previous) => {
+                                const next = new Set(previous);
+                                if (next.has(id)) next.delete(id);
+                                else next.add(id);
+                                return next;
+                              })
+                            }
+                          >
+                            {collapsed.has(id) ? (
+                              <ChevronRight size={15} />
+                            ) : (
+                              <ChevronDown size={15} />
+                            )}
+                          </button>
+                        ) : (
+                          <span className="node-dot" />
+                        )}
+                        <button
+                          className="topic-card"
+                          disabled={busy || !connected}
+                          aria-current={
+                            snapshot?.viewed_topic_id === topic.id
+                              ? "true"
+                              : undefined
+                          }
+                          onClick={() => {
+                            void activateTopic(topic.id, entry_id);
+                          }}
+                        >
+                          <span className={`branch-identity ${topic.kind}`}>
+                            {topic.branch_label}
+                            <small>
+                              {topic.parent_label
+                                ? `属 ${topic.parent_label}`
+                                : "会话根"}
+                            </small>
+                          </span>
+                          <span className="round-label">
+                            {kind === "root"
+                              ? "会话起点"
+                              : kind === "empty"
+                                ? "尚未开始"
+                                : `第 ${number} 轮`}
+                          </span>
+                          <span className="topic-title" title={turnTitle}>
+                            {turnTitle}
+                          </span>
+                          <span className="node-meta">
+                            {kind === "turn"
+                              ? `${message_count} 条消息`
+                              : kind === "empty"
+                                ? "未产生对话"
+                                : "共享会话"}
+                            {snapshot?.selected_topic_id === topic.id &&
+                              isLatest && <em>终端当前</em>}
+                            {snapshot?.running &&
+                              snapshot.active_topic_id === topic.id && (
+                                <em className="running">
+                                  <i />
+                                  生成中
+                                </em>
+                              )}
+                          </span>
+                        </button>
+                      </div>
+                    ),
                   )}
                 </div>
-                {preferences.showHints && (
-                  <p className="composer-note">
-                    Enter 发送 · Shift + Enter 换行 ·
-                    本地演示回复，尚未连接模型服务
-                  </p>
-                )}
               </div>
+            ) : (
+              <div className="empty-small">
+                {snapshot
+                  ? "没有找到这个话题"
+                  : "在终端输入 /map，查看真实话题。"}
+              </div>
+            )}
+          </nav>
+          <footer className="tree-footer">
+            <span>
+              {snapshot?.turns.length ?? 0} 轮对话 ·{" "}
+              {snapshot?.topics.length ?? 0} 条线
+            </span>
+            <div>
+              <button
+                className="fit-map"
+                onClick={() =>
+                  setZoom(
+                    Math.max(0.35, Math.min(1, (width - 48) / tree.width)),
+                  )
+                }
+              >
+                适应窗口
+              </button>
+              <button
+                className="icon-button"
+                aria-label="缩小话题树"
+                disabled={zoom <= 0.35}
+                onClick={() =>
+                  setZoom(Math.max(0.35, +(zoom - 0.1).toFixed(2)))
+                }
+              >
+                <Minus size={15} />
+              </button>
+              <button
+                className="zoom-value"
+                aria-label="重置缩放"
+                onClick={() => setZoom(1)}
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                className="icon-button"
+                aria-label="放大话题树"
+                disabled={zoom >= 1.5}
+                onClick={() => setZoom(Math.min(1.5, +(zoom + 0.1).toFixed(1)))}
+              >
+                <Plus size={15} />
+              </button>
             </div>
-          </section>
-          <aside
-            id="tree-panel"
-            className="inspector"
-            aria-label="预留对话树窗口"
-            aria-hidden={!treeOpen}
-            inert={!treeOpen}
-          >
-            <ResizeDivider
-              side="right"
-              value={Math.min(rightWidth, rightMax)}
-              min={220}
-              max={Math.max(220, rightMax)}
-              onChange={setRightWidth}
-              onDragging={setResizing}
-            />
-            <div className="inspector-inner">
-              <div className="inspector-header">
-                <GitBranch size={15} />
-                对话树<span className="subtle-badge">预留窗口</span>
+          </footer>
+        </section>
+        {split && mobile === "records" && (
+          <ResizeDivider
+            side="left"
+            value={panelWidth}
+            min={260}
+            max={maxWidth}
+            onChange={setTreeWidth}
+            onDragging={setDragging}
+            label="调整话题树宽度"
+            resetValue={360}
+          />
+        )}
+        <section
+          className="records-panel"
+          style={mobile === "tree" ? { display: "none" } : undefined}
+          aria-label="话题消息记录"
+        >
+          <div className="record-heading">
+            <div>
+              <span className="eyebrow">
+                {selected?.branch_label ?? "话题记录"} ·{" "}
+                {selected?.kind === "trunk" ? "会话主干" : "本分支主线"}
+              </span>
+              <h2>{selected?.title ?? "每条想法，都有来处"}</h2>
+              <p>
+                {selected?.id === snapshot?.selected_topic_id
+                  ? "当前所在位置：从本线最新消息继续，不进入子分支。"
+                  : "正在浏览记录；终端当前话题保持不变。"}
+              </p>
+            </div>
+            {selected && snapshot && (
+              <div className="record-actions">
+                <button
+                  disabled={!connected || busy || selected.kind === "trunk"}
+                  onClick={() => {
+                    setTitle(selected.title);
+                    setError("");
+                    setEditor({
+                      kind: "rename",
+                      session: snapshot.session_id,
+                      topic: selected.id,
+                      title: selected.title,
+                    });
+                  }}
+                >
+                  重命名
+                </button>
+                <button
+                  className="primary"
+                  disabled={
+                    !connected ||
+                    busy ||
+                    selected.id === snapshot.selected_topic_id
+                  }
+                  onClick={() =>
+                    void command({
+                      action: "select",
+                      session_id: snapshot.session_id,
+                      topic_id: selected.id,
+                    })
+                  }
+                >
+                  <ArrowUpRight size={16} />
+                  {selected.id === snapshot.selected_topic_id
+                    ? "终端当前话题"
+                    : "在此继续"}
+                </button>
               </div>
-              <div className="tree-placeholder">
-                <div className="placeholder-icon">
-                  <GitBranch size={23} />
-                </div>
-                <h2>留给之后的思路</h2>
+            )}
+          </div>
+          <div
+            className="records-scroll"
+            key={`${snapshot?.session_id}:${selected?.id}`}
+          >
+            {selected?.anchor_entry_id && (
+              <div className="anchor-note">
+                <GitBranch size={16} />
+                <span>
+                  从父话题中的消息建立 ·{" "}
+                  <code>{selected.anchor_entry_id.slice(0, 10)}</code>
+                </span>
+                <button
+                  onClick={() => {
+                    if (selected.anchor_entry_id)
+                      void locate(selected.anchor_entry_id);
+                  }}
+                >
+                  定位原文
+                </button>
+              </div>
+            )}
+            {snapshot?.has_more && snapshot.before !== null && (
+              <button
+                className="page-button"
+                onClick={() =>
+                  void load({
+                    topic: snapshot.viewed_topic_id,
+                    before: snapshot.before ?? undefined,
+                  })
+                }
+              >
+                加载更早的记录
+              </button>
+            )}
+            {view.current.before && (
+              <button
+                className="page-button"
+                onClick={() => void load({ topic: snapshot?.viewed_topic_id })}
+              >
+                回到最新记录
+              </button>
+            )}
+            {snapshot?.messages.length ? (
+              snapshot.messages.map((message) => (
+                <article
+                  className={`message role-${message.role} ${highlight === message.id ? "highlighted" : ""}`}
+                  id={"entry-" + message.id}
+                  key={message.id}
+                >
+                  <div className="message-meta">
+                    <strong>
+                      {message.role === "user"
+                        ? "你"
+                        : message.role === "assistant"
+                          ? "Octo"
+                          : message.role === "toolResult"
+                            ? "工具结果"
+                            : "会话记录"}
+                    </strong>
+                    <time>
+                      {new Date(message.timestamp * 1000).toLocaleString(
+                        "zh-CN",
+                        { hour12: false },
+                      )}
+                    </time>
+                    <code>{message.id.slice(0, 8)}</code>
+                  </div>
+                  <div className="message-text">
+                    {message.text || "（本条包含工具调用或非文本内容）"}
+                  </div>
+                  <div className="message-actions">
+                    <button
+                      aria-label="复制消息"
+                      onClick={() => void copy(message)}
+                    >
+                      {copied === message.id ? (
+                        <Check size={14} />
+                      ) : (
+                        <Copy size={14} />
+                      )}
+                      复制
+                    </button>
+                    <button
+                      disabled={!connected || busy}
+                      onClick={() => create(message.id)}
+                    >
+                      <GitBranch size={14} />
+                      从此建立子话题
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <div className="empty-records">
+                <OctoMark />
+                <h3>
+                  {selected
+                    ? "这里，留给新的想法"
+                    : "终端负责行动，地图整理思路"}
+                </h3>
                 <p>
-                  对话树将在这里呈现。
-                  <br />
-                  这一版先专注于对话体验。
+                  {selected
+                    ? "回到终端，直接沿当前主线提问。"
+                    : "模型、工具和配置都留在终端。"}
                 </p>
               </div>
-              <div className="inspector-footer">
-                <PanelRight size={12} />
-                点击右上角图标可收起窗口
-              </div>
-            </div>
-          </aside>
-        </div>
-      </section>
-      {settingsOpen && (
-        <Settings
-          preferences={preferences}
-          onChange={setPreferences}
-          onClose={() => setSettingsOpen(false)}
-          initialTab={settingsTab}
-          models={models}
-        />
-      )}
-      {toast && (
-        <div className="toast" role="status">
-          <Check size={14} />
-          {toast}
-        </div>
-      )}
+            )}
+          </div>
+          <footer className="record-footer">
+            <Terminal size={15} />
+            <span>在终端提问与查看生成过程</span>
+            <span className="shared-note">同一会话共享历史</span>
+          </footer>
+        </section>
+      </div>
+      <dialog
+        ref={dialog}
+        onCancel={(event) => {
+          if (busy) event.preventDefault();
+          else setEditor({ kind: "closed" });
+        }}
+        onClose={() => {
+          if (!busy) setEditor({ kind: "closed" });
+        }}
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!snapshot || editor.kind === "closed") return;
+            void command(
+              editor.kind === "create"
+                ? {
+                    action: "create",
+                    session_id: editor.session,
+                    topic_id: editor.parent,
+                    title,
+                    anchor_entry_id: editor.anchor,
+                  }
+                : {
+                    action: "rename",
+                    session_id: editor.session,
+                    topic_id: editor.topic,
+                    title,
+                  },
+            );
+          }}
+        >
+          <h2>{editor.kind === "rename" ? "重命名话题" : "建立子话题"}</h2>
+          <p>
+            {editor.kind === "create"
+              ? "建立后可查看新话题；点击「在此继续」才会切换终端。"
+              : "只改变话题名称，保留消息与归属。"}
+          </p>
+          <label>
+            话题名称
+            <input
+              autoFocus
+              required
+              maxLength={120}
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="这个想法叫什么？"
+            />
+          </label>
+          {error && (
+            <p className="form-error" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="dialog-actions">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setEditor({ kind: "closed" })}
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              className="primary"
+              disabled={busy || !connected || !title.trim()}
+            >
+              {busy ? "正在保存…" : "保存"}
+            </button>
+          </div>
+        </form>
+      </dialog>
     </main>
   );
 }
