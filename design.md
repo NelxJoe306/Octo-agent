@@ -304,9 +304,9 @@ soft_limit = min(floor(W * 0.74), hard_input_limit)
 
 ## 11. 桌面、服务与话题图
 
-交接文档选型：Electron + TypeScript / Next.js，Python FastAPI，本地 SQLite。当前仅有 CLI/TUI，这些新增目录与依赖尚未落地。
+交接文档选型：Electron + TypeScript / Next.js，Python FastAPI，本地 SQLite。已建立独立 `web/` 目录，页面和交互方案见 [Octo Web 设计](web/docs/desktop-design.md)，源码核对证据见 [reference-evidence.json](web/docs/reference-evidence.json)。会话页参考用户提供的 Codex 截图，设置和动效参考本地 agentes 预览；已实现 Next.js 本地交互预览：会话列表、消息区、输入框、设置与演示流式；依赖已锁定，可开发启动和静态导出。当前没有接入 Python Web API 或 SQLite，刷新恢复演示数据。
 
-桌面左侧话题图，中间线性消息，右侧 Skill/证据详情。树从话题和请求关系生成，与线性视图读取同一份记录；折叠只改变显示。
+用户最新决定：左侧保留会话列表，中间线性消息，右侧预留可收起的对话树窗口；本轮不实现树。未来树的数据与线性消息读取同一份记录，具体节点交互另行设计。
 
 目标位置：`octo_server/`、`desktop/`、`web/`。后端随机本地端口与启动 token，preload 暴露最小连接能力；Next.js 静态导出的路由和资源方式需在 Electron 中实际验证。
 
@@ -346,3 +346,12 @@ soft_limit = min(floor(W * 0.74), hard_input_limit)
 参考核查：本轮读取本机 `akashic-agent` 克隆，HEAD 与指定提交 `86428bb9b1d7e164f3e92adb15fdca0523709876` 一致；查看 `plugins/context/contract.py` 的准备/构造合同和 `plugins/context/plugin.py` 的构造入口。Octo 的 loop hook 是适配本项目调用链的接口，没有引入其插件运行时。本轮核查范围不等于已逐文件移植全部压缩与记忆模块。
 
 后续每次实现补充：实际改动位置、完成的可观察行为、执行的检查及结果、未解决限制。用户明确允许提交后，再记录实际 commit；检查通过本身不代表允许提交。
+
+2026-11-12 前端切片：实现位于 `web/`；完成两项状态行为测试、类型检查、静态构建及浏览器交互验证。独立双轴审查发现的隐藏搜索过滤与强制滚底问题已修复。详见 `web/docs/desktop-design.md` 第8节。未 commit 或创建 PR。
+
+2026-11-12 个人助手界面修订：移除项目分组和项目/环境条；左右窗口支持拖拽/键盘调宽；模型定义改为用户选择的本机JSON文件，页面按配置名称与能力展示模型和推理强度。导航不可选择、正文/输入可复制。原生文件句柄读取/写回及导入导出兼容代码已接入，但内置浏览器尚未完成文件落盘闭环验证；模型调用与Python配置加载尚未接入。设计与实际代码位置详见 `web/docs/desktop-design.md` 第9节。未commit。
+
+
+2026-11-12 响应式修复：复现并移除820px窗口右窗absolute覆盖聊天的问题。新增 `web/lib/layout.ts` 统一容器宽度预算；三栏/左栏抽屉/右窗独立视图分别在760px、600px边界切换，缩小窗口和拖动时保护聊天与输入区域。低高度收紧间距；修复窄窗会话导航、快捷搜索和新建输入焦点。4项测试、类型与构建通过，7组浏览器宽高检查通过；未commit。详见Web设计第10节。
+
+2026-11-12 PR 交付：用户已授权提交 Web 界面。分支为 feat/web-desktop-preview，基于最新 main（9bc27b1）；本次只提交 web/ 与本文，既有 Python /tree 删除改动保持本地未暂存。4项测试、类型检查、生产构建和暂存差异检查通过。前述未commit记录为授权前的历史状态。
