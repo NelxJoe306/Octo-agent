@@ -6,6 +6,7 @@ import os
 import sqlite3
 from dataclasses import replace
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 import tempfile
 import unittest
@@ -170,12 +171,18 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         from octo_coding.tui.app import OctoTuiApp, PromptInput
         session, provider, _ = await self.make_session()
         app = OctoTuiApp(session)
-        with patch('webbrowser.open', return_value=True):
+        directory = self.base/'map-assets'
+        directory.mkdir()
+        (directory/'index.html').write_text('offline map fixture', encoding='utf-8')
+        with patch('webbrowser.open', return_value=True), patch(
+            'octo_coding.tui.app.TopicWeb', partial(TopicWeb, directory=directory)
+        ):
             async with app.run_test(size=(110,35)) as pilot:
                 await pilot.pause()
                 prompt = app.query_one('#prompt', PromptInput)
                 prompt.text = '/topic new terminal child'
                 await app.action_submit_prompt()
+                await pilot.pause()
                 child = (await session.topic_snapshot())['topics'][-1]['id']
                 prompt.text = '/topic use '+child
                 await app.action_submit_prompt()
@@ -183,9 +190,16 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('terminal child', str(app.query_one('#topic-indicator').render()))
                 prompt.text = '/map'
                 await app.action_submit_prompt()
+                await pilot.pause()
+                self.assertIsNotNone(app._topic_web)
                 self.assertIs(app._topic_web.session, session)
                 web = app._topic_web
+                async with httpx.AsyncClient(trust_env=False) as client:
+                    response = await client.get(web.origin)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.text, 'offline map fixture')
                 self.assertEqual(provider.calls, [])
+                await pilot.pause()
         self.assertTrue(web.closed)
 
     async def test_tool_round_keeps_frozen_topic_and_static_prefix(self):
