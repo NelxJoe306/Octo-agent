@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { z } from "zod";
+import { mergeMessagePage } from "@/lib/message-window";
+import type { PageDirection } from "@/lib/message-window";
 import {
   ArrowUpRight,
   Check,
@@ -42,6 +44,14 @@ type Editor =
       title: string;
     };
 
+type MessageView = {
+  session?: Snapshot["session_id"];
+  topic?: TopicId;
+  before?: number;
+  after?: number;
+};
+type ScrollTarget = { kind: "entry"; id: string } | { kind: "latest" };
+
 export default function Home() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [connection, setConnection] = useState<Connection>({
@@ -60,16 +70,20 @@ export default function Home() {
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [highlight, setHighlight] = useState<string | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
+  const highlight = scrollTarget?.kind === "entry" ? scrollTarget.id : null;
+  const [loadingPage, setLoadingPage] = useState(false);
+  const snapshotRef = useRef<Snapshot | null>(null);
+  const loadingRevision = useRef(0);
+  const pendingRefresh = useRef(false);
+  const recordsPane = useRef<HTMLDivElement>(null);
+  const newerSentinel = useRef<HTMLDivElement>(null);
+  const prependScroll = useRef<{ height: number; top: number } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const frame = useRef<HTMLDivElement>(null);
   const token = useRef("");
   const serial = useRef(0);
-  const view = useRef<{
-    session?: Snapshot["session_id"];
-    topic?: TopicId;
-    before?: number;
-  }>({});
+  const view = useRef<MessageView>({});
   const dialog = useRef<HTMLDialogElement>(null);
   const topicMenu = useRef<HTMLDivElement>(null);
   const tabBar = useRef<HTMLDivElement>(null);
@@ -100,20 +114,36 @@ export default function Home() {
   }
 
   async function load(
-    next: {
-      session?: Snapshot["session_id"];
-      topic?: TopicId;
-      before?: number;
-    } = view.current,
+    next?: MessageView,
     openTab = false,
+    direction: PageDirection = "replace",
   ) {
+    const refresh = next === undefined;
+    if ((refresh || direction !== "replace") && loadingRevision.current) {
+      if (refresh) pendingRefresh.current = true;
+      return;
+    }
+    const previous = snapshotRef.current;
+    const target = next ?? {
+      session: view.current.session,
+      topic: view.current.topic,
+      after:
+        previous?.viewed_topic_id === view.current.topic
+          ? (previous?.after ?? undefined)
+          : undefined,
+    };
+    const mode = refresh && previous ? "newer" : direction;
     const oldSession = view.current.session;
-    view.current = next;
+    if (mode === "replace") view.current = target;
     const revision = ++serial.current;
+    loadingRevision.current = revision;
+    setLoadingPage(true);
     try {
       const params = new URLSearchParams();
-      if (next.topic) params.set("topic_id", next.topic);
-      if (next.before) params.set("before", String(next.before));
+      if (target.topic) params.set("topic_id", target.topic);
+      if (target.before !== undefined)
+        params.set("before", String(target.before));
+      if (target.after !== undefined) params.set("after", String(target.after));
       let data: unknown;
       try {
         data = await request(`/api/snapshot?${params}`);
@@ -128,15 +158,29 @@ export default function Home() {
       if (replaced)
         parsed = snapshotSchema.parse(await request("/api/snapshot"));
       if (revision !== serial.current) return;
+      const current = snapshotRef.current;
+      const sameView =
+        current?.session_id === parsed.session_id &&
+        current?.viewed_topic_id === parsed.viewed_topic_id;
+      if (mode === "older" && sameView && recordsPane.current) {
+        prependScroll.current = {
+          height: recordsPane.current.scrollHeight,
+          top: recordsPane.current.scrollTop,
+        };
+      } else if (mode === "replace" || !sameView) prependScroll.current = null;
+      const merged = mergeMessagePage(
+        current,
+        parsed,
+        replaced ? "replace" : mode,
+      );
       view.current = {
-        session: parsed.session_id,
-        topic: parsed.viewed_topic_id,
-        before: replaced ? undefined : next.before,
+        session: merged.session_id,
+        topic: merged.viewed_topic_id,
       };
       if (replaced) {
         setCollapsed(new Set());
         setEditor({ kind: "closed" });
-        setHighlight(null);
+        setScrollTarget(null);
       }
       setTabs((previous) => {
         const existing = replaced ? [] : previous;
@@ -144,15 +188,31 @@ export default function Home() {
           ? openTopicTab(existing, parsed.viewed_topic_id)
           : existing;
       });
-      setSnapshot(parsed);
+      snapshotRef.current = merged;
+      setSnapshot(merged);
       setConnection({ kind: "connected" });
+      return merged;
     } catch (cause) {
       if (revision === serial.current)
         setConnection({
           kind: "disconnected",
           reason: cause instanceof Error ? cause.message : "连接失败",
         });
+    } finally {
+      if (loadingRevision.current === revision) {
+        loadingRevision.current = 0;
+        setLoadingPage(false);
+        if (pendingRefresh.current) {
+          pendingRefresh.current = false;
+          void load();
+        }
+      }
     }
+  }
+
+  async function jumpToLatest() {
+    const loaded = await load({ topic: snapshotRef.current?.viewed_topic_id });
+    if (loaded) setScrollTarget({ kind: "latest" });
   }
 
   useEffect(() => {
@@ -188,6 +248,8 @@ export default function Home() {
     return () => {
       disposed = true;
       ++serial.current;
+      loadingRevision.current = 0;
+      pendingRefresh.current = false;
       stream.close();
     };
   }, []);
@@ -206,12 +268,59 @@ export default function Home() {
     else if (!dialog.current?.open) dialog.current?.showModal();
   }, [editor]);
 
-  useEffect(() => {
-    if (highlight)
+  useLayoutEffect(() => {
+    if (scrollTarget?.kind === "entry")
       document
-        .getElementById("entry-" + highlight)
-        ?.scrollIntoView({ block: "center" });
-  }, [snapshot, highlight]);
+        .getElementById("entry-" + scrollTarget.id)
+        ?.scrollIntoView({ block: "center", behavior: "instant" });
+    else if (scrollTarget?.kind === "latest" && recordsPane.current)
+      recordsPane.current.scrollTo({
+        top: recordsPane.current.scrollHeight,
+        behavior: "instant",
+      });
+  }, [scrollTarget]);
+
+  useLayoutEffect(() => {
+    const previous = prependScroll.current;
+    if (previous && recordsPane.current) {
+      recordsPane.current.scrollTo({
+        top: previous.top + recordsPane.current.scrollHeight - previous.height,
+        behavior: "instant",
+      });
+      prependScroll.current = null;
+    }
+  }, [snapshot?.messages]);
+
+  useEffect(() => {
+    if (
+      connection.kind !== "connected" ||
+      !snapshot?.has_newer ||
+      snapshot.after === null ||
+      !newerSentinel.current ||
+      !recordsPane.current ||
+      typeof IntersectionObserver === "undefined"
+    )
+      return;
+    const topic = snapshot.viewed_topic_id,
+      after = snapshot.after;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting))
+          void load({ topic, after }, false, "newer");
+      },
+      { root: recordsPane.current, rootMargin: "0px 0px 160px 0px" },
+    );
+    observer.observe(newerSentinel.current);
+    return () => observer.disconnect();
+  }, [
+    snapshot?.session_id,
+    snapshot?.viewed_topic_id,
+    snapshot?.after,
+    snapshot?.has_newer,
+    mobile,
+    loadingPage,
+    connection.kind,
+  ]);
 
   useEffect(() => {
     tabBar.current
@@ -231,8 +340,12 @@ export default function Home() {
           await request("/api/anchor?entry_id=" + encodeURIComponent(entry)),
         );
       setMobile("records");
-      setHighlight(anchor.entry_id);
-      await load({ topic: anchor.topic_id, before: anchor.seq + 1 }, true);
+      setScrollTarget(null);
+      const loaded = await load(
+        { topic: anchor.topic_id, before: anchor.seq + 1 },
+        true,
+      );
+      if (loaded) setScrollTarget({ kind: "entry", id: anchor.entry_id });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "无法定位原文");
     }
@@ -279,13 +392,14 @@ export default function Home() {
     entry: Message["id"] | null = null,
   ) {
     if (!snapshot || busy) return;
-    setHighlight(null);
+    setScrollTarget(null);
     await command({
       action: "select",
       session_id: snapshot.session_id,
       topic_id: id,
     });
     if (entry) await locate(entry);
+    else setScrollTarget({ kind: "latest" });
   }
   function create(anchor: Message["id"] | null = null) {
     if (!selected || !snapshot) return;
@@ -786,6 +900,7 @@ export default function Home() {
           </div>
           <div
             className="records-scroll"
+            ref={recordsPane}
             key={`${snapshot?.session_id}:${selected?.id}`}
           >
             {selected?.anchor_entry_id && (
@@ -809,19 +924,23 @@ export default function Home() {
               <button
                 className="page-button"
                 onClick={() =>
-                  void load({
-                    topic: snapshot.viewed_topic_id,
-                    before: snapshot.before ?? undefined,
-                  })
+                  void load(
+                    {
+                      topic: snapshot.viewed_topic_id,
+                      before: snapshot.before ?? undefined,
+                    },
+                    false,
+                    "older",
+                  )
                 }
               >
                 加载更早的记录
               </button>
             )}
-            {view.current.before && (
+            {(snapshot?.has_newer || highlight) && (
               <button
                 className="page-button"
-                onClick={() => void load({ topic: snapshot?.viewed_topic_id })}
+                onClick={() => void jumpToLatest()}
               >
                 回到最新记录
               </button>
@@ -890,6 +1009,26 @@ export default function Home() {
                     ? "回到终端，直接沿当前主线提问。"
                     : "模型、工具和配置都留在终端。"}
                 </p>
+              </div>
+            )}
+            {snapshot?.has_newer && snapshot.after !== null && (
+              <div ref={newerSentinel} className="newer-page">
+                <button
+                  className="page-button"
+                  disabled={loadingPage}
+                  onClick={() =>
+                    void load(
+                      {
+                        topic: snapshot.viewed_topic_id,
+                        after: snapshot.after ?? undefined,
+                      },
+                      false,
+                      "newer",
+                    )
+                  }
+                >
+                  {loadingPage ? "正在加载后续记录…" : "加载后续记录"}
+                </button>
               </div>
             )}
           </div>
