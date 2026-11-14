@@ -1676,6 +1676,8 @@ def openai_compatible_config_from_provider(
         api_key=api_key,
         provider_name=provider.name,
         api=str(_provider_api(provider, selected_model)),
+        context_window=provider.context_windows.get(selected_model),
+        model_max_output_tokens=provider_model_max_tokens(provider, selected_model),
         base_url=base_url.rstrip("/"),
         headers=_model_headers(provider, selected_model),
         timeout_seconds=provider.timeout_seconds,

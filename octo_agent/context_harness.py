@@ -4,9 +4,18 @@ import asyncio
 from collections.abc import Sequence
 from typing import Protocol
 
+from octo_agent.context_budget import ContextBudgetDecision
+from octo_agent.tools import AgentTool
 from octo_agent.messages import AgentMessage, AssistantMessage, ToolResultMessage
 from octo_agent.provider import CancellationToken
 from octo_agent.tool_history import repair_tool_history
+
+class CheckContext(Protocol):
+    async def __call__(
+        self, *, model: str, system: str, messages: Sequence[AgentMessage],
+        tools: Sequence[AgentTool],
+    ) -> ContextBudgetDecision: ...
+
 
 class PrepareContext(Protocol):
     async def __call__(

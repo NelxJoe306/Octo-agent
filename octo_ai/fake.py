@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Iterable
 
 from octo_agent.messages import AgentMessage
 from octo_agent.tools import AgentTool
+from octo_ai.model_limits import DEFAULT_REQUEST_OUTPUT_TOKENS, RequestTokenBudget
 from octo_ai.events import AssistantMessageEvent
 from octo_ai.provider import CancellationToken
 
@@ -12,9 +13,20 @@ class FakeProvider:
 
 
     def __init__(self, streams: Iterable[Iterable[AssistantMessageEvent]]) -> None:
+        self._request_output_tokens = DEFAULT_REQUEST_OUTPUT_TOKENS
         self._streams = [list(stream) for stream in streams]
         self.calls: list[tuple[str, str, list[AgentMessage], list[AgentTool]]] = []
         self.session_ids: list[str | None] = []
+
+    def request_token_budget(self) -> RequestTokenBudget:
+        return RequestTokenBudget(self._request_output_tokens)
+
+    def configure_request_budget(
+        self, *, context_window: int, safety_margin: int,
+        output_override: int | None = None, model_max_output_tokens: int | None = None,
+    ) -> RequestTokenBudget:
+        self._request_output_tokens = DEFAULT_REQUEST_OUTPUT_TOKENS if output_override is None else output_override
+        return self.request_token_budget()
 
     def stream_response(
         self,

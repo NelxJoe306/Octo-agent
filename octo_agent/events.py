@@ -4,10 +4,16 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
+from octo_agent.context_budget import ContextBudgetDecision
 from octo_agent.messages import AgentMessage, ToolResultMessage, WireModel
 from octo_agent.provider_events import AssistantMessageEvent
 from octo_agent.tools import AgentToolResult
 from octo_agent.types import JSONValue
+
+
+class ContextBudgetEvent(WireModel):
+    type: Literal["context_budget"] = "context_budget"
+    decision: ContextBudgetDecision
 
 
 class AgentStartEvent(WireModel):
@@ -72,6 +78,7 @@ class ToolExecutionEndEvent(WireModel):
 
 type AgentEvent = Annotated[
     AgentStartEvent
+    | ContextBudgetEvent
     | AgentEndEvent
     | TurnStartEvent
     | TurnEndEvent

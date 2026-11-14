@@ -10,6 +10,7 @@ from os import environ
 from pathlib import Path
 from typing import Literal
 
+from octo_agent.context_budget import ContextBudgetDecision, ContextBudgetPolicy, evaluate_context_budget
 from octo_agent.events import AgentEndEvent, AgentEvent, MessageStartEvent, MessageEndEvent, ToolExecutionEndEvent
 from octo_agent.harness import AgentHarness, AgentHarnessConfig, QueuedMessages
 from octo_agent.messages import (
@@ -46,7 +47,7 @@ from octo_agent.tool_history import ToolHistoryRepair, repair_tool_history
 from octo_agent.tools import AgentTool
 from octo_agent.types import JSONValue
 from octo_ai.model_catalog import ModelCatalogProvider, RuntimeModel, RuntimeModelCatalog
-from octo_ai.model_limits import ModelLimitsProvider, RuntimeModelLimits
+from octo_ai.model_limits import ConfigurableRequestBudgetProvider, ModelLimitsProvider, RequestBudgetProvider, RuntimeModelLimits
 from octo_coding.branch_summary import summarize_branch_messages_with_model
 from octo_coding.codex_model_store import (
     cached_codex_model_catalog,
@@ -114,6 +115,7 @@ from octo_coding.provider_config import (
     load_provider_settings,
     provider_default_thinking_level,
     provider_has_usable_credentials,
+    provider_model_max_tokens,
     provider_model_supports_images,
     provider_thinking_levels,
     provider_thinking_unavailable_reason,
@@ -362,6 +364,10 @@ class CodingSessionConfig:
     owns_initial_provider: bool = False
     auto_compact_token_threshold: int | None = None
     auto_compact_enabled: bool = True
+    context_safety_margin: int = 1024
+    context_soft_ratio: float = 0.8
+    context_image_reserve: int = 4096
+    context_output_reserve_tokens: int | None = None
     thinking_level: ThinkingLevel = DEFAULT_THINKING_LEVEL
     thinking_level_override: ThinkingLevel | None = None
 
@@ -468,6 +474,9 @@ class CodingSession:
         self._topic_edit_lock = asyncio.Lock()
         self._topic_display_path: str | None = None
         self._topic_listeners: list[Callable[[], None]] = []
+        self._last_context_budget: ContextBudgetDecision | None = None
+        self._last_context_budget_error: str | None = None
+        self._harness.config.check_context = self._check_context_budget
         self._base_prepare_context = self._harness.config.prepare_context
         if self._topics is not None:
             self._harness.config.prepare_context = self._prepare_topic_context
@@ -882,6 +891,70 @@ class CodingSession:
              "continue_from_entry_id": request.continuation_entry_id, "continuation": "沿本线主干继续，不进入子分支"}, ensure_ascii=False
         ) + "。同一会话的已发生历史共享；请围绕当前话题回答，勿将其他话题的假设套入本题。</system-reminder>"
         return (*messages, UserMessage(content=reminder))
+
+    @property
+    def last_context_budget(self) -> ContextBudgetDecision | None:
+        return self._last_context_budget
+
+    @property
+    def last_context_budget_error(self) -> str | None:
+        return self._last_context_budget_error
+
+    async def _check_context_budget(
+        self, *, model: str, system: str, messages: Sequence[AgentMessage],
+        tools: Sequence[AgentTool],
+    ) -> ContextBudgetDecision:
+        self._last_context_budget = None
+        self._last_context_budget_error = None
+        try:
+            limits = self._runtime_model_limits if self._runtime_model_limits_key == (self.provider_name, model) else None
+            window = limits.effective_context_window if limits is not None else self.context_window_tokens
+            additional_system = ""
+            if isinstance(self.provider, RequestBudgetProvider):
+                if isinstance(self.provider, ConfigurableRequestBudgetProvider):
+                    request_budget = self.provider.configure_request_budget(
+                        context_window=window, safety_margin=self._config.context_safety_margin,
+                        output_override=self._config.context_output_reserve_tokens,
+                        model_max_output_tokens=limits.max_output_tokens if limits is not None else None,
+                    )
+                else:
+                    request_budget = self.provider.request_token_budget()
+                    override = self._config.context_output_reserve_tokens
+                    if override is not None and override != request_budget.max_output_tokens:
+                        raise ValueError("Provider must implement configure_request_budget to change its actual output limit")
+                if request_budget.context_window is not None:
+                    window = min(window, request_budget.context_window)
+                output = request_budget.max_output_tokens
+                additional_system = request_budget.additional_system
+                output_source = "request_parameter"
+            else:
+                provider = self._active_provider_config() or self._runtime_provider_config
+                output = (limits.max_output_tokens if limits is not None else None) or (
+                    provider_model_max_tokens(provider, model) if provider is not None else None
+                )
+                output_source = "model_maximum"
+                if output is None:
+                    output = self._config.context_output_reserve_tokens
+                    output_source = "configured_reserve"
+                if output is None:
+                    raise ValueError(
+                        "Cannot resolve output reserve for this provider; configure model max_tokens "
+                        "or CodingSessionConfig.context_output_reserve_tokens"
+                    )
+            decision = evaluate_context_budget(
+                ContextBudgetPolicy(
+                    context_window=window, output_reserve=output,
+                    safety_margin=self._config.context_safety_margin,
+                    soft_ratio=self._config.context_soft_ratio,
+                    image_reserve=self._config.context_image_reserve, output_source=output_source,
+                ),
+                system=system + additional_system, messages=messages, tools=tools,
+            )
+            self._last_context_budget = decision
+            return decision
+        except ValueError as exc:
+            self._last_context_budget_error = str(exc)
+            raise
 
     @property
     def cwd(self) -> Path:
@@ -2299,6 +2372,8 @@ class CodingSession:
         self._runtime_model_limits = None
         self._runtime_model_limits_key = None
         self._model_limits_discovery_error = None
+        self._last_context_budget = None
+        self._last_context_budget_error = None
 
     async def _refresh_runtime_model_limits(self) -> None:
         key = (self.provider_name, self.model)
@@ -2952,6 +3027,9 @@ class CodingSession:
             self._topic_display_path = None
             self._active_topic_request = None
             self._topic_message_requests = {}
+            self._last_context_budget = None
+            self._last_context_budget_error = None
+            self._harness.config.check_context = self._check_context_budget
             self._base_prepare_context = replacement._base_prepare_context
             if self._topics is not None:
                 self._harness.config.prepare_context = self._prepare_topic_context

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import replace
 from contextlib import suppress
 from json import JSONDecodeError, dumps, loads
 from typing import Any, Protocol
@@ -41,6 +42,7 @@ from octo_ai.events import AssistantMessageEvent
 from octo_ai.http import create_async_client
 from octo_ai.http_errors import provider_http_error_message
 from octo_ai.openai_cache import is_direct_openai_url, openai_prompt_cache_key
+from octo_ai.model_limits import RequestTokenBudget, resolve_request_output_tokens
 from octo_ai.provider import CancellationToken
 from octo_ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
 from octo_ai.stream import canonicalize_provider_stream
@@ -67,9 +69,31 @@ class OpenAICompatibleProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._config = config
+        self._configured_max_tokens = config.max_tokens
+        self._config = replace(config, max_tokens=resolve_request_output_tokens(
+            config.max_tokens, context_window=config.context_window,
+            model_max_output_tokens=config.model_max_output_tokens,
+        ))
         self._client = client
         self._owns_client = client is None
+
+    def request_token_budget(self) -> RequestTokenBudget:
+        return RequestTokenBudget(
+            resolve_request_output_tokens(self._config.max_tokens), context_window=self._config.context_window,
+        )
+
+    def configure_request_budget(
+        self, *, context_window: int, safety_margin: int,
+        output_override: int | None = None, model_max_output_tokens: int | None = None,
+    ) -> RequestTokenBudget:
+        maximum = model_max_output_tokens or self._config.model_max_output_tokens
+        output = resolve_request_output_tokens(
+            output_override if output_override is not None else self._configured_max_tokens,
+            context_window=min(context_window, self._config.context_window or context_window), safety_margin=safety_margin,
+            model_max_output_tokens=maximum,
+        )
+        self._config = replace(self._config, max_tokens=output)
+        return self.request_token_budget()
 
     async def aclose(self) -> None:
 

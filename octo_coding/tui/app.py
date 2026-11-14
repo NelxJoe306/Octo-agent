@@ -43,6 +43,7 @@ from textual.widgets import (
 from textual.worker import Worker
 
 from octo_agent.events import (
+    ContextBudgetEvent,
     AgentEndEvent,
     AgentStartEvent,
     MessageEndEvent,
@@ -5411,6 +5412,11 @@ class OctoTuiApp(App[None]):
             transcript = self.query_one("#transcript", TranscriptView)
         except NoMatches:
             self._refresh()
+            return
+        if isinstance(event, ContextBudgetEvent):
+            if event.decision.status == "NEEDS_COMPACTION":
+                self.notify(event.decision.summary(), title="上下文接近容量，需要压缩", severity="warning")
+            self._refresh_chrome()
             return
         if isinstance(event, AgentStartEvent):
             self._refresh_chrome()
