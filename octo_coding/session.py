@@ -13,7 +13,7 @@ from typing import Literal
 from octo_agent.context_budget import ContextBudgetDecision, ContextBudgetPolicy, ContextBudgetExceeded, evaluate_context_budget
 from octo_agent.context_recovery import ContextRecoveryResult, RecoveryReason, overflow_token_deficit, is_context_overflow_error
 from octo_coding.compaction import COMPACTION_STATE_NAMESPACE, TRIM_NOTICE, select_context_blocks
-from octo_agent.events import AgentEndEvent, AgentEvent, MessageStartEvent, MessageEndEvent, ToolExecutionEndEvent
+from octo_agent.events import AgentStartEvent, AgentEndEvent, AgentEvent, MessageStartEvent, MessageEndEvent, ToolExecutionEndEvent
 from octo_agent.harness import AgentHarness, AgentHarnessConfig, QueuedMessages
 from octo_agent.messages import (
     AgentMessage,
@@ -77,8 +77,6 @@ from octo_coding.events import (
     AutoRetryEndEvent,
     AutoRetryStartEvent,
     CodingSessionEvent,
-    CompactionEndEvent,
-    CompactionStartEvent,
     QueueUpdateEvent,
     SessionAgentEndEvent,
     SessionInfoChangedEvent,
@@ -471,6 +469,7 @@ class CodingSession:
         self._base_prepare_context = self._harness.config.prepare_context
         self._context_summary_failures = next((int(entry.data.get("failures", 0))
             for entry in reversed(state.custom_entries) if entry.namespace == COMPACTION_STATE_NAMESPACE), 0)
+        self._context_overflow_attempted = False
         self._harness.config.prepare_context = self._prepare_session_context
         self._harness.config.recover_context = self._recover_context if self._auto_compact_enabled else None
         self._attach_persistence_listener()
@@ -880,6 +879,12 @@ class CodingSession:
         return tuple((entry_id, message) for entry_id, message in rows
                      if not (isinstance(message, AssistantMessage) and message.stop_reason in {"error", "aborted"})
                      and not (isinstance(message, ToolResultMessage) and message.tool_call_id in failed_calls))
+
+    def _protected_round_ids(self, rows: Sequence[tuple[str, AgentMessage]]) -> set[str]:
+        user_ids = {entry.id for entry in self._state.entries if isinstance(entry, CustomMessageEntry) or
+                    isinstance(entry, MessageEntry) and isinstance(entry.message, UserMessage)}
+        first = next((index for index in range(len(rows) - 1, -1, -1) if rows[index][0] in user_ids), len(rows))
+        return {entry_id for entry_id, _ in rows[first:]}
 
     async def _prepare_session_context(self, messages: tuple[AgentMessage, ...], *,
                                        signal: CancellationToken | None) -> Sequence[AgentMessage]:
@@ -2230,9 +2235,17 @@ class CodingSession:
 
     def will_auto_retry(self, message: AssistantMessage) -> bool:
 
-        return is_context_overflow_error(message) or self._should_auto_failover_huggingface_route(
-            message
-        )
+        if self._should_auto_failover_huggingface_route(message):
+            return True
+        if not (
+            self._harness.is_running and self._harness.config.recover_context is not None
+            and not self._context_overflow_attempted and not message.tool_calls
+            and message.stop_reason == "error" and is_context_overflow_error(message)
+        ):
+            return False
+        rows = self._context_rows()
+        protected = self._protected_round_ids(rows)
+        return any(entry_id not in protected for entry_id, _ in rows)
 
     def _should_auto_failover_huggingface_route(
         self,
@@ -3045,6 +3058,7 @@ class CodingSession:
             self._harness.config.prepare_context = self._prepare_session_context
             self._harness.config.recover_context = self._recover_context if replacement._auto_compact_enabled else None
             self._context_summary_failures = replacement._context_summary_failures
+            self._context_overflow_attempted = False
             self._notify_topics()
 
 
@@ -3102,10 +3116,7 @@ class CodingSession:
         self._require_idle("compact")
         await self._flush_pending_message_writes(context=self._diagnostic_context())
         rows = self._context_rows()
-        user_ids = {entry.id for entry in self._state.entries if isinstance(entry, CustomMessageEntry) or
-                    isinstance(entry, MessageEntry) and isinstance(entry.message, UserMessage)}
-        latest_user_index = next((index for index in range(len(rows) - 1, -1, -1) if rows[index][0] in user_ids), len(rows))
-        protected = {entry_id for entry_id, _ in rows[latest_user_index:]}
+        protected = self._protected_round_ids(rows)
         prepared = await self._prepare_session_context((), signal=None)
         budget = await self._check_context_budget(model=self.model, system=self.system_prompt, messages=prepared, tools=self.tools)
         selected = select_context_blocks(rows, remove_tokens=budget.estimated_input - min(20000, max(0, budget.hard_input_limit // 2)),
@@ -3553,6 +3564,8 @@ class CodingSession:
             self._persistence_unsubscribe = subscribe(self._persist_on_message_end)
 
     async def _persist_on_message_end(self, event: AgentEvent) -> None:
+        if isinstance(event, AgentStartEvent):
+            self._context_overflow_attempted = False
         if isinstance(event, MessageStartEvent) and id(event.message) in self._topic_message_requests:
             request = self._topic_message_requests.pop(id(event.message))[1]
             self._active_topic_request = replace(request, continuation_entry_id=self._topics.latest_entry_id(request.topic_id)) if self._topics else request
@@ -3614,6 +3627,8 @@ class CodingSession:
                     self._log_persistence_failure(context=context, exc=exc)
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
+        if not self._pending_message_writes:
+            self._harness.replace_messages(self._state.messages)
 
     async def _flush_pending_message_writes(self, *, context: AgentCallDiagnosticContext) -> None:
 
@@ -3822,22 +3837,21 @@ class CodingSession:
         self, *, reason: RecoveryReason, decision: ContextBudgetDecision,
         error_message: str | None = None, signal: CancellationToken | None = None,
     ) -> ContextRecoveryResult:
+        if reason == "overflow":
+            self._context_overflow_attempted = True
         if signal is not None and signal.is_cancelled():
             raise asyncio.CancelledError
         rows = self._context_rows()
-        actual_user_ids = {entry.id for entry in self._state.entries if (
-            isinstance(entry, CustomMessageEntry) or isinstance(entry, MessageEntry) and isinstance(entry.message, UserMessage)
-        )}
-        protected = next(({entry_id} for entry_id, _ in reversed(rows) if entry_id in actual_user_ids), set())
+        protected = self._protected_round_ids(rows)
         required = await self._prepare_topic_context(tuple(message for entry_id, message in rows if entry_id in protected), signal=signal)
         try:
             required_budget = await self._check_context_budget(model=self.model, system=self.system_prompt,
                 messages=required, tools=self.tools)
         finally:
             self._last_context_budget = decision
-        # 当前输入与固定前置已超窗时，压缩旧历史也无法腾出足够空间。
+        # 当前完整轮次与固定前置已超窗时，压缩旧历史也无法腾出足够空间。
         if required_budget.status == "BLOCK":
-            return ContextRecoveryResult(False, detail="Current input and fixed context exceed capacity; protected input was not changed")
+            return ContextRecoveryResult(False, detail="Current round and fixed context exceed capacity; protected messages were not changed")
         target = max(0, min(decision.soft_input_limit, decision.hard_input_limit) * 3 // 4)
         if reason == "overflow":
             deficit = overflow_token_deficit(error_message or "")

@@ -12,7 +12,7 @@ from unittest.mock import patch
 from octo_agent.events import MessageEndEvent
 from octo_agent.context_budget import ContextBudgetExceeded
 from octo_agent.context_recovery import overflow_token_deficit
-from octo_coding.compaction import context_blocks
+from octo_coding.compaction import context_blocks, select_context_blocks
 from octo_coding.tui.adapter import TuiEventAdapter
 from octo_coding.tui.state import TuiState
 from octo_agent.messages import AssistantMessage, ToolCall, ToolResultMessage, UserMessage
@@ -94,6 +94,10 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
         last_input = provider.calls[-1][2]
         self.assertTrue(any('Previous conversation summary:' in message.text for message in last_input))
         self.assertTrue(any(message.text == 'Inspect the evidence and answer' for message in last_input))
+        self.assertTrue(any(isinstance(message, ToolResultMessage) and message.text == 'evidence ' * 500 for message in last_input))
+        self.assertTrue(any(isinstance(message, AssistantMessage) and any(call.id == 'read-1' for call in message.tool_calls) for message in last_input))
+        self.assertEqual([message.model_dump() for message in session.messages],
+                         [message.model_dump() for message in session.state.messages])
         self.assertEqual(session.messages[-1].text, 'final answer')
         originals = [entry for entry in entries if isinstance(entry, MessageEntry)]
         self.assertEqual([entry.model_dump() for entry in originals[:2]], [entry.model_dump() for entry in seeded])
@@ -134,7 +138,13 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
                 session, provider, _, seeded = await self.make_session([
                     failure(overflow), failure(overflow) if repeat_error else response('recovered'), response('must not retry twice'),
                 ], ratio=0.95, seed=(UserMessage(content='old ' * 200), AssistantMessage(content='old answer ' * 150)))
-                events = [event async for event in session.prompt('current question')]
+                events = []
+                retry_flags = []
+                async for event in session.prompt('current question'):
+                    events.append(event)
+                    if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and event.message.stop_reason == 'error':
+                        retry_flags.append(session.will_auto_retry(event.message))
+                self.assertEqual(retry_flags, [True, False] if repeat_error else [True])
                 self.assertEqual(len(provider.calls), 2)
                 self.assertFalse(any(call[1] == SUMMARIZATION_SYSTEM_PROMPT for call in provider.calls))
                 self.assertTrue(any(message.text == 'current question' for message in provider.calls[-1][2]))
@@ -244,6 +254,9 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
                 ('rb', ToolResultMessage(tool_call_id='b', tool_name='read', content='B'))]
         blocks = context_blocks(rows, protected_ids={'user'}, image_reserve=4096)
         self.assertEqual([block.entry_ids for block in blocks], [('user',), ('call', 'ra', 'rb')])
+        selected = select_context_blocks(rows, remove_tokens=1,
+            protected_ids={entry_id for entry_id, _ in rows}, image_reserve=4096)
+        self.assertEqual(selected, ())
         with self.assertRaisesRegex(ValueError, 'tool history'):
             context_blocks(rows[:-1], protected_ids={'user'}, image_reserve=4096)
 
@@ -389,6 +402,44 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.calls), 3)
         self.assertEqual(session.messages[-1].text, 'queued retry answer')
         self.assertTrue(any(message.text == 'follow-up question' for message in provider.calls[-1][2]))
+
+    async def test_current_round_tool_result_that_cannot_fit_is_never_summarized_or_trimmed(self):
+        async def read(call_id, arguments, signal=None, on_update=None):
+            return AgentToolResult(content='critical evidence ' * 1600)
+        tool = AgentTool(name='read', label='Read', description='Read evidence', parameters={}, execute_fn=read)
+        session, provider, _, _ = await self.make_session([
+            response('inspect', [ToolCall(id='current-read', name='read', arguments={})]),
+            response('must not summarize current evidence'), response('must not send'),
+        ], seed=(UserMessage(content='short old question'), AssistantMessage(content='short old answer')), tools=[tool])
+        with self.assertRaises(ContextBudgetExceeded):
+            _ = [event async for event in session.prompt('Use the current tool evidence')]
+        self.assertEqual(len(provider.calls), 1)
+        self.assertFalse(any(isinstance(entry, CompactionEntry) for entry in await session.session_entries()))
+        self.assertTrue(any(isinstance(message, ToolResultMessage) and message.text == 'critical evidence ' * 1600
+                            for message in session.messages))
+        self.assertEqual(session.context_summary_failures, 0)
+        self.assertEqual(session.last_context_budget.status, 'BLOCK')
+
+    async def test_overflow_without_old_context_does_not_claim_a_retry(self):
+        session, provider, _, _ = await self.make_session([failure('Context window exceeded'), response('must not retry')])
+        flags = []
+        async for event in session.prompt('current question'):
+            if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and event.message.stop_reason == 'error':
+                flags.append(session.will_auto_retry(event.message))
+        self.assertEqual(flags, [False])
+        self.assertEqual(len(provider.calls), 1)
+
+    async def test_disabled_recovery_does_not_claim_a_retry(self):
+        session, provider, _, _ = await self.make_session([
+            failure('Context window exceeded'), response('must not retry'),
+        ], ratio=0.95, seed=(UserMessage(content='old question'), AssistantMessage(content='old answer')))
+        session.set_auto_compaction_enabled(False)
+        flags = []
+        async for event in session.prompt('current question'):
+            if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage) and event.message.stop_reason == 'error':
+                flags.append(session.will_auto_retry(event.message))
+        self.assertEqual(flags, [False])
+        self.assertEqual(len(provider.calls), 1)
 
 
 if __name__ == '__main__':
