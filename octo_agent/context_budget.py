@@ -85,11 +85,7 @@ def _json_tokens(value: object) -> int:
     return estimate_budget_text(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
-def evaluate_context_budget(
-    policy: ContextBudgetPolicy, *, system: str,
-    messages: Sequence[AgentMessage], tools: Sequence[AgentTool],
-) -> ContextBudgetDecision:
-    system_tokens = estimate_budget_text(system) + 16
+def estimate_budget_messages(messages: Sequence[AgentMessage], *, image_reserve: int) -> tuple[int, int]:
     message_tokens = 0
     image_tokens = 0
     for message in messages:
@@ -111,7 +107,16 @@ def evaluate_context_budget(
                 message_tokens += _json_tokens(block.arguments)
                 message_tokens += estimate_budget_text(block.thought_signature or "")
             elif isinstance(block, ImageContent):
-                image_tokens += policy.image_reserve
+                image_tokens += image_reserve
+    return message_tokens, image_tokens
+
+
+def evaluate_context_budget(
+    policy: ContextBudgetPolicy, *, system: str,
+    messages: Sequence[AgentMessage], tools: Sequence[AgentTool],
+) -> ContextBudgetDecision:
+    system_tokens = estimate_budget_text(system) + 16
+    message_tokens, image_tokens = estimate_budget_messages(messages, image_reserve=policy.image_reserve)
     tool_tokens = sum(16 + _json_tokens({
         "name": tool.name, "description": tool.description, "parameters": dict(tool.input_schema),
     }) for tool in tools)

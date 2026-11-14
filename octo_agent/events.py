@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from octo_agent.context_budget import ContextBudgetDecision
+from octo_agent.context_recovery import ContextRecoveryResult, RecoveryReason
 from octo_agent.messages import AgentMessage, ToolResultMessage, WireModel
 from octo_agent.provider_events import AssistantMessageEvent
 from octo_agent.tools import AgentToolResult
@@ -14,6 +15,17 @@ from octo_agent.types import JSONValue
 class ContextBudgetEvent(WireModel):
     type: Literal["context_budget"] = "context_budget"
     decision: ContextBudgetDecision
+
+
+class ContextRecoveryStartEvent(WireModel):
+    type: Literal["context_recovery_start"] = "context_recovery_start"
+    reason: RecoveryReason
+
+
+class ContextRecoveryEndEvent(WireModel):
+    type: Literal["context_recovery_end"] = "context_recovery_end"
+    reason: RecoveryReason
+    result: ContextRecoveryResult
 
 
 class AgentStartEvent(WireModel):
@@ -79,6 +91,8 @@ class ToolExecutionEndEvent(WireModel):
 type AgentEvent = Annotated[
     AgentStartEvent
     | ContextBudgetEvent
+    | ContextRecoveryStartEvent
+    | ContextRecoveryEndEvent
     | AgentEndEvent
     | TurnStartEvent
     | TurnEndEvent

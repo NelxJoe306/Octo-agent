@@ -6,8 +6,11 @@ from time import monotonic_ns
 
 from octo_agent.context_harness import CheckContext, PrepareContext, prepare_model_context
 from octo_agent.context_budget import ContextBudgetExceeded
+from octo_agent.context_recovery import RecoverContext, is_context_overflow_error_text
 from octo_agent.events import (
     ContextBudgetEvent,
+    ContextRecoveryStartEvent,
+    ContextRecoveryEndEvent,
     AgentEndEvent,
     AgentEvent,
     AgentStartEvent,
@@ -69,6 +72,7 @@ async def run_agent_loop(
     after_tool_call: AfterToolCall | None = None,
     prepare_context: PrepareContext | None = None,
     check_context: CheckContext | None = None,
+    recover_context: RecoverContext | None = None,
 ) -> AsyncIterator[AgentEvent]:
 
     new_messages = list(prompts)
@@ -97,11 +101,13 @@ async def run_agent_loop(
     tool_by_name = {tool.name: tool for tool in tools}
     turn = 1
     first_turn = True
+    overflow_retried = False
+    overflow_retry_pending = False
     pending = tuple(get_steering_messages() if get_steering_messages else ())
 
     while True:
         has_more_tools = True
-        while has_more_tools or pending:
+        while has_more_tools or pending or overflow_retry_pending:
             if not first_turn:
                 yield TurnStartEvent()
             first_turn = False
@@ -124,22 +130,30 @@ async def run_agent_loop(
                 return
 
 
-            model_messages = (
-                _provider_context(messages)
-                if prepare_context is None
-                else await prepare_model_context(messages, prepare_context, signal=signal)
-            )
-            if signal is not None and signal.is_cancelled():
-                raise asyncio.CancelledError
-            if check_context is not None:
-                decision = await check_context(
-                    model=model, system=system, messages=model_messages, tools=tools,
+            decision = None
+            for preparation_attempt in range(2):
+                model_messages = (
+                    _provider_context(messages) if prepare_context is None
+                    else await prepare_model_context(messages, prepare_context, signal=signal)
                 )
-                yield ContextBudgetEvent(decision=decision)
-                if decision.status == "BLOCK":
-                    raise ContextBudgetExceeded(decision)
+                if signal is not None and signal.is_cancelled():
+                    raise asyncio.CancelledError
+                if check_context is not None:
+                    decision = await check_context(model=model, system=system, messages=model_messages, tools=tools)
+                    yield ContextBudgetEvent(decision=decision)
+                    if preparation_attempt == 0 and not overflow_retry_pending and recover_context is not None and decision.status != "ALLOW":
+                        reason = "hard" if decision.status == "BLOCK" else "soft"
+                        yield ContextRecoveryStartEvent(reason=reason)
+                        result = await recover_context(reason=reason, decision=decision, signal=signal)
+                        yield ContextRecoveryEndEvent(reason=reason, result=result)
+                        if result.changed:
+                            continue
+                    if decision.status == "BLOCK":
+                        raise ContextBudgetExceeded(decision)
+                break
             if signal is not None and signal.is_cancelled():
                 raise asyncio.CancelledError
+            overflow_retry_pending = False
             assistant = None
             async for event in _assistant_events(
                 provider=provider,
@@ -164,6 +178,22 @@ async def run_agent_loop(
             messages.append(assistant)
             new_messages.append(assistant)
             if assistant.stop_reason in {"error", "aborted"}:
+                if (
+                    assistant.stop_reason == "error" and not assistant.tool_calls
+                    and not overflow_retried and recover_context is not None and decision is not None
+                    and is_context_overflow_error_text(assistant.error_message or "")
+                ):
+                    overflow_retried = True
+                    yield ContextRecoveryStartEvent(reason="overflow")
+                    result = await recover_context(
+                        reason="overflow", decision=decision,
+                        error_message=assistant.error_message, signal=signal,
+                    )
+                    yield ContextRecoveryEndEvent(reason="overflow", result=result)
+                    if result.changed:
+                        overflow_retry_pending = True
+                        yield TurnEndEvent(message=assistant)
+                        continue
                 yield TurnEndEvent(message=assistant)
                 yield AgentEndEvent(messages=new_messages)
                 return

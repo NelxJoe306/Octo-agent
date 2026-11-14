@@ -151,6 +151,18 @@ class SessionTopics:
             connection.execute('INSERT OR IGNORE INTO entry_requests VALUES (?, ?, ?)',
                                (self.session_id, entry.id, request.id))
 
+    def source_topics(self, entry_ids: list[str]) -> dict[str, dict]:
+        with self.storage.database.connection() as connection:
+            rows = connection.execute("""SELECT e.id, json_extract(e.body_json, '$.type'),
+                COALESCE(r.topic_id, 'main'), COALESCE(r.topic_path, '[]')
+                FROM session_entries e
+                LEFT JOIN entry_requests a ON a.session_id=e.session_id AND a.entry_id=e.id
+                LEFT JOIN topic_requests r ON r.session_id=a.session_id AND r.request_id=a.request_id
+                WHERE e.session_id=? AND e.id IN (SELECT value FROM json_each(?))""",
+                (self.session_id, json.dumps(entry_ids))).fetchall()
+        return {entry_id: {"topic_id": "shared_summary" if kind == "compaction" else topic,
+                           "path": json.loads(path)} for entry_id, kind, topic, path in rows}
+
     def rounds(self) -> list[dict]:
         topics = {topic['id']: topic for topic in self.topics()}
         with self.storage.database.connection() as connection:

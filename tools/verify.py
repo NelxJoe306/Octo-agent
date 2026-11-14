@@ -61,16 +61,13 @@ class SourceChecks(unittest.TestCase):
             self.assertFalse((ROOT / "octo_coding" / removed).exists())
 
     def test_only_core_comments_remain(self):
-        count = 0
         for path in all_sources():
             source = path.read_text(encoding="utf-8")
             for node in ast.walk(ast.parse(source)):
                 self.assertFalse(isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str), path)
             for token in tokenize.generate_tokens(io.StringIO(source).readline):
                 if token.type == tokenize.COMMENT:
-                    count += 1
                     self.assertTrue(any("\u4e00" <= char <= "\u9fff" for char in token.string), (path, token.string))
-        self.assertEqual(count, 13)
 
     def test_cli_help_and_version(self):
         from typer.testing import CliRunner

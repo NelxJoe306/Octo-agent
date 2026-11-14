@@ -150,6 +150,19 @@ class SQLiteSessionStorage:
         encoded = tuple((entry.id, _encode(entry)) for entry in entries)
         await asyncio.to_thread(self._append_encoded, encoded)
 
+    async def append_batch_if_head(self, entries: Sequence[SessionEntry], *, expected_head: str | None) -> None:
+        encoded = tuple((entry.id, _encode(entry)) for entry in entries)
+        await asyncio.to_thread(self._append_at_head, encoded, expected_head)
+
+    def _append_at_head(self, encoded: tuple[tuple[str, str], ...], expected_head: str | None) -> None:
+        with self.database.transaction() as connection:
+            row = connection.execute(
+                "SELECT id FROM session_entries WHERE session_id = ? ORDER BY seq DESC LIMIT 1", (self.session_id,),
+            ).fetchone()
+            if (row[0] if row is not None else None) != expected_head:
+                raise ValueError("Session head changed during context compaction")
+            self._append_in_transaction(connection, encoded)
+
     def append_batch_sync(self, entries: Sequence[SessionEntry]) -> None:
         self._append_encoded(tuple((entry.id, _encode(entry)) for entry in entries))
 

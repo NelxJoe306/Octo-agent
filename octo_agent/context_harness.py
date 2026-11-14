@@ -39,7 +39,12 @@ async def prepare_model_context(
     if signal is not None and signal.is_cancelled():
         raise asyncio.CancelledError
     prepared = tuple(message.model_copy(deep=True) for message in projected)
-    if repair_tool_history(prepared).changed:
+    validate_model_context(prepared)
+    return list(prepared)
+
+
+def validate_model_context(prepared: Sequence[AgentMessage]) -> None:
+    if repair_tool_history(tuple(prepared)).changed:
         raise ValueError("Prepared context contains incomplete or reordered tool history")
     tool_names: dict[str, str] = {}
     for message in prepared:
@@ -48,4 +53,3 @@ async def prepare_model_context(
         elif isinstance(message, ToolResultMessage):
             if tool_names.get(message.tool_call_id) != message.tool_name:
                 raise ValueError("Prepared context contains mismatched tool history names")
-    return list(prepared)
