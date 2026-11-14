@@ -4,8 +4,10 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from time import monotonic_ns
 
-from octo_agent.context_harness import PrepareContext, prepare_model_context
+from octo_agent.context_harness import CheckContext, PrepareContext, prepare_model_context
+from octo_agent.context_budget import ContextBudgetExceeded
 from octo_agent.events import (
+    ContextBudgetEvent,
     AgentEndEvent,
     AgentEvent,
     AgentStartEvent,
@@ -66,6 +68,7 @@ async def run_agent_loop(
     before_tool_call: BeforeToolCall | None = None,
     after_tool_call: AfterToolCall | None = None,
     prepare_context: PrepareContext | None = None,
+    check_context: CheckContext | None = None,
 ) -> AsyncIterator[AgentEvent]:
 
     new_messages = list(prompts)
@@ -126,6 +129,17 @@ async def run_agent_loop(
                 if prepare_context is None
                 else await prepare_model_context(messages, prepare_context, signal=signal)
             )
+            if signal is not None and signal.is_cancelled():
+                raise asyncio.CancelledError
+            if check_context is not None:
+                decision = await check_context(
+                    model=model, system=system, messages=model_messages, tools=tools,
+                )
+                yield ContextBudgetEvent(decision=decision)
+                if decision.status == "BLOCK":
+                    raise ContextBudgetExceeded(decision)
+            if signal is not None and signal.is_cancelled():
+                raise asyncio.CancelledError
             assistant = None
             async for event in _assistant_events(
                 provider=provider,

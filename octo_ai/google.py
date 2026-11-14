@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from json import JSONDecodeError, loads
 
 import httpx
@@ -36,6 +37,7 @@ from octo_ai.env import OpenAICompatibleConfig
 from octo_ai.events import AssistantMessageEvent
 from octo_ai.http import create_async_client
 from octo_ai.http_errors import provider_http_error_message
+from octo_ai.model_limits import RequestTokenBudget, resolve_request_output_tokens
 from octo_ai.provider import CancellationToken
 from octo_ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
 from octo_ai.stream import canonicalize_provider_stream
@@ -51,9 +53,12 @@ class GoogleGenerativeAIProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._config = config
+        self._config = replace(config, max_tokens=resolve_request_output_tokens(config.max_tokens))
         self._client = client
         self._owns_client = client is None
+
+    def request_token_budget(self) -> RequestTokenBudget:
+        return RequestTokenBudget(resolve_request_output_tokens(self._config.max_tokens))
 
     async def aclose(self) -> None:
 

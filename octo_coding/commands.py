@@ -495,6 +495,13 @@ def _status_command(context: CommandContext) -> CommandResult:
                 f"messages={context_usage.message_tokens}, "
                 f"tools={context_usage.tool_tokens}",
             )
+    budget = getattr(session, "last_context_budget", None)
+    if budget is not None:
+        lines.append("Last main request: " + budget.summary())
+        lines.append(
+            f"Last request estimate: system={budget.system_tokens}, messages={budget.message_tokens}, "
+            f"tools={budget.tool_tokens}, images={budget.image_tokens}"
+        )
     lines.extend(_thinking_status_lines(session))
     lines.append(f"Resource diagnostics: {len(session.resource_diagnostics)}")
     if session.auto_compact_token_threshold is not None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from collections.abc import AsyncIterator, Mapping
 from json import loads
 from typing import Any, cast
@@ -45,6 +46,7 @@ from octo_ai.env import (
 from octo_ai.events import AssistantMessageEvent
 from octo_ai.http import create_async_client
 from octo_ai.http_errors import provider_http_error_message
+from octo_ai.model_limits import RequestTokenBudget, resolve_request_output_tokens
 from octo_ai.provider import CancellationToken
 from octo_ai.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
 from octo_ai.stream import canonicalize_provider_stream
@@ -78,6 +80,12 @@ class AnthropicProvider:
         self._config = config
         self._client = client
         self._owns_client = client is None
+
+    def request_token_budget(self) -> RequestTokenBudget:
+        return RequestTokenBudget(
+            _request_output_tokens(self._config.max_tokens, self._config.thinking_budget_tokens),
+            self._config.oauth_system_prompt or "",
+        )
 
     async def aclose(self) -> None:
 
@@ -418,6 +426,11 @@ class _AnthropicToolBuilder:
         )
 
 
+def _request_output_tokens(max_tokens: int | None, thinking_budget_tokens: int | None) -> int:
+    resolved = resolve_request_output_tokens(max_tokens, default=DEFAULT_MAX_TOKENS)
+    return max(resolved, thinking_budget_tokens + 1024) if thinking_budget_tokens is not None else resolved
+
+
 def _build_messages_payload(
     *,
     model: str,
@@ -433,9 +446,7 @@ def _build_messages_payload(
     cache_retention: CacheRetention = CACHE_RETENTION_SHORT,
     cache_control_on_tools: bool = True,
 ) -> dict[str, JSONValue]:
-    resolved_max_tokens = max_tokens or DEFAULT_MAX_TOKENS
-    if thinking_budget_tokens is not None:
-        resolved_max_tokens = max(resolved_max_tokens, thinking_budget_tokens + 1024)
+    resolved_max_tokens = _request_output_tokens(max_tokens, thinking_budget_tokens)
     cache_control = _cache_control(cache_retention)
     payload_messages = []
     for message in messages:

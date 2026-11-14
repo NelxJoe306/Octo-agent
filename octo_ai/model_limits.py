@@ -4,6 +4,27 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 
+DEFAULT_REQUEST_OUTPUT_TOKENS = 16_384
+
+
+def resolve_request_output_tokens(value: int | None, *, default: int = DEFAULT_REQUEST_OUTPUT_TOKENS) -> int:
+    resolved = default if value is None else value
+    if resolved <= 0:
+        raise ValueError("Request output token limit must be positive")
+    return resolved
+
+
+@dataclass(frozen=True, slots=True)
+class RequestTokenBudget:
+    max_output_tokens: int
+    additional_system: str = ""
+
+
+@runtime_checkable
+class RequestBudgetProvider(Protocol):
+    def request_token_budget(self) -> RequestTokenBudget: ...
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeModelLimits:
 
