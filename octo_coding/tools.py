@@ -514,6 +514,11 @@ def create_edit_tool(*, cwd: str | Path | None = None) -> AgentTool:
     return create_edit_tool_definition(cwd=cwd).to_agent_tool()
 
 
+def shell_environment(prefix: str | None = None) -> str:
+    shell = 'cmd.exe' if os.name == 'nt' else ('bash' if prefix else '/bin/sh')
+    return shell + (' with a configured command prefix; check its syntax before assuming a shell dialect' if prefix else '')
+
+
 def create_bash_tool_definition(
     *,
     cwd: str | Path | None = None,
@@ -600,6 +605,7 @@ def create_bash_tool_definition(
 
         return AgentToolResult(
             content=[TextContent(text=output_text)],
+            is_error=timed_out or cancelled or exit_code not in (0, None),
             details={
                 "command": command,
                 "exit_code": exit_code,
@@ -615,12 +621,12 @@ def create_bash_tool_definition(
     return ToolDefinition(
         name="bash",
         description=(
-            "Execute a bash command in the current working directory. Returns stdout and stderr. "
+            f"Execute a shell command using {shell_environment(prefix)} in the current working directory. Returns stdout and stderr. "
             f"Output is truncated to last {DEFAULT_MAX_OUTPUT_LINES} lines or "
             f"{DEFAULT_MAX_OUTPUT_BYTES // 1024}KB (whichever is hit first). If truncated, "
             "full output is saved to a temp file. Optionally provide a timeout in seconds."
         ),
-        prompt_snippet="Execute bash commands (ls, grep, find, etc.)",
+        prompt_snippet=f"Execute shell commands using {shell_environment(prefix)}",
         prompt_guidelines=(
             "When using bash, include a brief present-participle description of the "
             "command's purpose (for example, 'Running tests').",
@@ -628,7 +634,7 @@ def create_bash_tool_definition(
         input_schema={
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Bash command to execute"},
+                "command": {"type": "string", "description": "Command to execute in the documented runtime shell"},
                 "description": {
                     "type": "string",
                     "description": (

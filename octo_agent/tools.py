@@ -23,6 +23,7 @@ class AgentToolResult(WireModel):
     details: JSONValue = None
     added_tool_names: list[str] | None = None
     terminate: bool | None = None
+    is_error: bool = False
 
     @model_validator(mode="before")
     @classmethod

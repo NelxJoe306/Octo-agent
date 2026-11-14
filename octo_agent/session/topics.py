@@ -88,7 +88,7 @@ class SessionTopics:
                                        (self.session_id, topic_id)).fetchone()
         return topic[0] if topic else None
 
-    def create(self, *, parent_id: str, title: str, anchor_entry_id: str | None = None) -> str:
+    def create(self, *, parent_id: str, title: str, anchor_entry_id: str | None = None, activate: bool = False) -> str:
         title = self._title(title)
         if anchor_entry_id is None:
             anchor_entry_id = self.latest_entry_id(parent_id)
@@ -106,6 +106,8 @@ class SessionTopics:
                     raise ValueError('Anchor must be a message in this session')
             connection.execute('INSERT INTO topics VALUES (?, ?, ?, ?, ?)',
                                (self.session_id, topic_id, parent_id, anchor_entry_id, title))
+            if activate:
+                connection.execute('UPDATE topic_selection SET topic_id=? WHERE session_id=?', (topic_id, self.session_id))
         return topic_id
 
     def select(self, topic_id: str) -> None:

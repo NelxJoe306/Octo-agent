@@ -137,7 +137,7 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_topic_commands_and_new_session_do_not_reuse_old_callback(self):
         session, provider, _ = await self.make_session()
-        self.assertIsNotNone(session.handle_command('/topic new example').topic_arguments)
+        self.assertIsNotNone(session.handle_command('/topic-new example').topic_arguments)
         self.assertTrue(session.handle_command('/map').map_requested)
         await session.topic_command('new example')
         old_id = session.session_id
@@ -180,11 +180,11 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
             async with app.run_test(size=(110,35)) as pilot:
                 await pilot.pause()
                 prompt = app.query_one('#prompt', PromptInput)
-                prompt.text = '/topic new terminal child'
+                prompt.text = '/topic-new terminal child'
                 await app.action_submit_prompt()
                 await pilot.pause()
                 child = (await session.topic_snapshot())['topics'][-1]['id']
-                prompt.text = '/topic use '+child
+                prompt.text = '/topic-use '+child
                 await app.action_submit_prompt()
                 await pilot.pause()
                 self.assertIn('terminal child', str(app.query_one('#topic-indicator').render()))
@@ -225,7 +225,10 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(provider.calls), 2)
         self.assertEqual(provider.calls[0][1], provider.calls[1][1])
         self.assertEqual(provider.calls[0][3], provider.calls[1][3])
-        self.assertEqual(provider.calls[0][2][-1].text, provider.calls[1][2][-1].text)
+        first = json.loads(provider.calls[0][2][-1].text.split('\n', 1)[1].rsplit('\n', 1)[0])
+        second = json.loads(provider.calls[1][2][-1].text.split('\n', 1)[1].rsplit('\n', 1)[0])
+        self.assertEqual(first['current_topic'], second['current_topic'])
+        self.assertEqual([source['topic_id'] for source in second['history_sources']], [a, a, a])
         self.assertIn('original title', provider.calls[1][2][-1].text)
         data = await session.topic_snapshot(a)
         self.assertIn('fixture evidence', [message['text'] for message in data['messages']])
@@ -309,6 +312,84 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turns[1]['parent_turn_id'],first.id)
         self.assertEqual(turns[-1]['number'],1)
         self.assertEqual(turns[1]['number'],2)
+
+
+
+    async def test_hyphen_commands_create_and_select_and_accept_unique_title(self):
+        session, provider, _ = await self.make_session()
+        command = session.handle_command('/topic-new memory')
+        self.assertTrue(command.handled)
+        await session.topic_command(command.topic_arguments)
+        child = session.current_topic_id
+        self.assertNotEqual(child, 'main')
+        await session.topic_command(session.handle_command('/topic-use main').topic_arguments)
+        await session.topic_command(session.handle_command('/topic-use memory').topic_arguments)
+        self.assertEqual(session.current_topic_id, child)
+        await session.edit_topic('create', session_id=session.session_id, title='memory')
+        with self.assertRaisesRegex(ValueError, '重名'):
+            await session.topic_command('use memory')
+        self.assertEqual(provider.calls, [])
+
+    async def test_web_create_can_select_atomically_without_model_calls(self):
+        session, provider, _ = await self.make_session()
+        directory = self.base/'static'; directory.mkdir(); (directory/'index.html').write_text('map')
+        server = TopicWeb(session, directory=directory)
+        self.addCleanup(server.close)
+        async with httpx.AsyncClient(trust_env=False) as client:
+            response = await client.post(server.origin+'/api/topics',
+                headers={'X-Octo-Token': server.token}, json={'action':'create',
+                'session_id':session.session_id, 'topic_id':'main', 'title':'web child', 'activate':True})
+        self.assertEqual(response.status_code, 200, response.text)
+        child = response.json()['topic_id']
+        self.assertEqual(session.current_topic_id, child)
+        with self.assertRaises(ValueError):
+            await session.edit_topic('create', session_id=session.session_id, topic_id='main',
+                title='invalid', anchor_entry_id='missing', activate=True)
+        self.assertEqual(session.current_topic_id, child)
+        self.assertEqual(len((await session.topic_snapshot())['topics']), 2)
+        self.assertEqual(provider.calls, [])
+
+    async def test_model_input_identifies_runtime_and_each_history_topic(self):
+        answer = lambda text: [AssistantDoneEvent(reason='stop', message=AssistantMessage(content=text, model='offline'))]
+        session, provider, _ = await self.make_session([answer('main answer'), answer('child answer')])
+        _ = [event async for event in session.prompt('main question')]
+        await session.topic_command('new child')
+        child = session.current_topic_id
+        _ = [event async for event in session.prompt('which topic?')]
+        reminder = provider.calls[-1][2][-1].text
+        self.assertIn('Octo', reminder)
+        self.assertIn('offline', reminder)
+        self.assertIn('history_sources', reminder)
+        payload = json.loads(reminder.split('\n', 1)[1].rsplit('\n', 1)[0])
+        self.assertEqual(payload['runtime']['model'], 'offline')
+        sources = payload['history_sources']
+        self.assertEqual([s['topic_id'] for s in sources], ['main', 'main', child])
+        self.assertEqual([s['message_index'] for s in sources], [0, 1, 2])
+        self.assertEqual([m.text for m in session.messages], ['main question', 'main answer', 'which topic?', 'child answer'])
+
+    async def test_nonzero_native_shell_result_is_reported_as_error(self):
+        from octo_agent.loop import _run_tool
+        from octo_coding.tools import create_bash_tool
+        tool = create_bash_tool(cwd=self.base)
+        result, is_error, _ = await _run_tool(tool, ToolCall(id='exit', name='bash',
+            arguments={'command':'exit 7', 'description':'Testing exit status'}), None)
+        self.assertEqual(result.details['exit_code'], 7)
+        self.assertTrue(is_error)
+        self.assertIn('cmd.exe' if os.name == 'nt' else '/bin/sh', tool.description)
+        call = AssistantMessage(model='offline', content=[ToolCall(id='shell-error', name='bash',
+            arguments={'command':'exit 7', 'description':'Testing exit status'})], stop_reason='toolUse')
+        session, provider, config = await self.make_session([
+            [AssistantDoneEvent(reason='toolUse', message=call)],
+            [AssistantDoneEvent(reason='stop', message=AssistantMessage(content='reported failure', model='offline'))],
+        ])
+        _ = [event async for event in session.prompt('run the harmless failure fixture')]
+        from octo_agent.messages import ToolResultMessage
+        evidence = [message for message in provider.calls[1][2] if isinstance(message, ToolResultMessage)]
+        self.assertEqual(len(evidence), 1)
+        self.assertTrue(evidence[0].is_error)
+        stored = [entry.message for entry in await config.storage.read_all()
+                  if isinstance(entry, MessageEntry) and isinstance(entry.message, ToolResultMessage)]
+        self.assertTrue(stored[0].is_error)
 
 
 if __name__ == '__main__':

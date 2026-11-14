@@ -224,8 +224,14 @@ class CommandRegistry:
 def create_default_command_registry() -> CommandRegistry:
 
     registry = CommandRegistry()
-    registry.register(SlashCommand(name="topic", usage="/topic list | new <title> | use <id> | rename <title>",
-        description="Manage shared-history topics.", handler=_topic_command))
+    for action, arguments, description in (
+        ("list", "", "List topics and their IDs."),
+        ("new", " <title>", "Create a child topic and switch to it."),
+        ("use", " <name-or-id>", "Switch the topic for the next prompt."),
+        ("rename", " <title>", "Rename the current topic."),
+    ):
+        registry.register(SlashCommand(name="topic-" + action, usage="/topic-" + action + arguments,
+            description=description, handler=_topic_command))
     registry.register(SlashCommand(name="map", usage="/map", description="Open the topic map for this terminal session.",
         handler=lambda context: CommandResult(handled=True, map_requested=True)))
     registry.register(
@@ -415,7 +421,7 @@ def create_default_command_registry() -> CommandRegistry:
 
 
 def _topic_command(context: CommandContext) -> CommandResult:
-    return CommandResult(handled=True, topic_arguments=context.args)
+    return CommandResult(handled=True, topic_arguments=context.name.removeprefix("topic-") + " " + context.args)
 
 
 def _help_command(context: CommandContext) -> CommandResult:

@@ -18,6 +18,7 @@ import {
   Terminal,
   X,
 } from "lucide-react";
+import { MessageContent } from "@/components/message-content";
 import { OctoMark } from "@/components/mark";
 import { ResizeDivider } from "@/components/resize-divider";
 import {
@@ -34,12 +35,6 @@ type Connection =
   | { kind: "disconnected"; reason: string };
 type Editor =
   | { kind: "closed" }
-  | {
-      kind: "create";
-      session: Snapshot["session_id"];
-      parent: TopicId;
-      anchor: Message["id"] | null;
-    }
   | {
       kind: "rename";
       session: Snapshot["session_id"];
@@ -76,6 +71,8 @@ export default function Home() {
     before?: number;
   }>({});
   const dialog = useRef<HTMLDialogElement>(null);
+  const topicMenu = useRef<HTMLDivElement>(null);
+  const tabBar = useRef<HTMLDivElement>(null);
 
   async function request(path: string, command?: TopicCommand) {
     const response = await fetch(path, {
@@ -216,6 +213,12 @@ export default function Home() {
         ?.scrollIntoView({ block: "center" });
   }, [snapshot, highlight]);
 
+  useEffect(() => {
+    tabBar.current
+      ?.querySelector('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tabs, mobile, snapshot?.viewed_topic_id]);
+
   async function locate(entry: Message["id"]) {
     try {
       const anchor = z
@@ -286,15 +289,24 @@ export default function Home() {
   }
   function create(anchor: Message["id"] | null = null) {
     if (!selected || !snapshot) return;
-    setError("");
-    setTitle("");
-    setEditor({
-      kind: "create",
-      session: snapshot.session_id,
-      parent: selected.id,
-      anchor,
+    const number = snapshot.topics.length;
+    let name = `新分支 ${number}`;
+    for (
+      let suffix = number;
+      snapshot.topics.some((topic) => topic.title === name);
+      suffix++
+    )
+      name = `新分支 ${suffix + 1}`;
+    void command({
+      action: "create",
+      session_id: snapshot.session_id,
+      topic_id: selected.id,
+      title: name,
+      anchor_entry_id: anchor,
+      activate: true,
     });
   }
+
   async function copy(message: Message) {
     try {
       await navigator.clipboard.writeText(message.text);
@@ -313,7 +325,17 @@ export default function Home() {
         <div className="brand">
           <OctoMark />
           <strong>Octo</strong>
-          <span>话题地图</span>
+        </div>
+        <div className="session-strip" title={snapshot?.title}>
+          <Terminal size={17} />
+          <strong>{snapshot?.title ?? "连接你的终端会话"}</strong>
+          <span>终端当前：{current?.title ?? "—"}</span>
+          {snapshot?.running && (
+            <span className="running">
+              <i />
+              正在生成
+            </span>
+          )}
         </div>
         <div className="top-actions">
           <span className={`connection ${connected ? "online" : ""}`}>
@@ -340,17 +362,6 @@ export default function Home() {
           </button>
         </div>
       </header>
-      <div className="session-strip">
-        <Terminal size={17} />
-        <strong>{snapshot?.title ?? "连接你的终端会话"}</strong>
-        <span>终端当前：{current?.title ?? "—"}</span>
-        {snapshot?.running && (
-          <span className="running">
-            <i />
-            正在生成
-          </span>
-        )}
-      </div>
       {connection.kind === "disconnected" && (
         <div className="notice" role="status">
           {connection.reason}
@@ -365,83 +376,134 @@ export default function Home() {
           </button>
         </div>
       )}
-      <div
-        className="branch-tabs"
-        role="tablist"
-        aria-label="已打开的话题"
-        onKeyDown={(event) => {
-          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
-            return;
-          const buttons = Array.from(
-            event.currentTarget.querySelectorAll<HTMLButtonElement>(
-              "button[role=tab]",
-            ),
-          );
-          const current = buttons.findIndex(
-            (button) => button === document.activeElement,
-          );
-          if (current < 0) return;
-          event.preventDefault();
-          const next =
-            event.key === "Home"
-              ? 0
-              : event.key === "End"
-                ? buttons.length - 1
-                : (current +
-                    (event.key === "ArrowRight" ? 1 : -1) +
-                    buttons.length) %
-                  buttons.length;
-          buttons[next]?.focus();
-          buttons[next]?.click();
-        }}
-      >
-        <button
-          role="tab"
-          aria-selected={mobile === "tree"}
-          onClick={() => setMobile("tree")}
+      <div className="branch-toolbar">
+        <div
+          className="branch-tabs"
+          ref={tabBar}
+          role="tablist"
+          aria-label="已打开的话题"
+          onKeyDown={(event) => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+              return;
+            const buttons = Array.from(
+              event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                "button[role=tab]",
+              ),
+            );
+            const current = buttons.findIndex(
+              (button) => button === document.activeElement,
+            );
+            if (current < 0) return;
+            event.preventDefault();
+            const next =
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? buttons.length - 1
+                  : (current +
+                      (event.key === "ArrowRight" ? 1 : -1) +
+                      buttons.length) %
+                    buttons.length;
+            buttons[next]?.focus();
+            buttons[next]?.click();
+          }}
         >
-          <GitBranch size={15} />
-          话题地图
-        </button>
-        {tabs.map((id) => {
-          const topic = snapshot?.topics.find((item) => item.id === id);
-          if (!topic) return null;
-          return (
-            <div
-              className={`branch-tab ${mobile === "records" && selected?.id === id ? "active" : ""}`}
-              key={id}
-            >
+          <button
+            role="tab"
+            aria-selected={mobile === "tree"}
+            onClick={() => setMobile("tree")}
+          >
+            <GitBranch size={15} />
+            话题地图
+          </button>
+          {tabs.map((id) => {
+            const topic = snapshot?.topics.find((item) => item.id === id);
+            if (!topic) return null;
+            return (
+              <div
+                className={`branch-tab ${mobile === "records" && selected?.id === id ? "active" : ""}`}
+                key={id}
+              >
+                <button
+                  role="tab"
+                  disabled={busy || !connected}
+                  aria-selected={mobile === "records" && selected?.id === id}
+                  title={topic.title}
+                  onClick={() => {
+                    setMobile("records");
+                    void activateTopic(id);
+                  }}
+                >
+                  {topic.title}
+                </button>
+                <button
+                  className="close-tab"
+                  aria-label={`关闭${topic.title}标签`}
+                  onClick={() => {
+                    const index = tabs.indexOf(id);
+                    const remaining = tabs.filter((item) => item !== id);
+                    setTabs(remaining);
+                    if (selected?.id === id) {
+                      const neighbor = remaining[Math.max(0, index - 1)];
+                      if (neighbor) void activateTopic(neighbor);
+                      else setMobile("tree");
+                    }
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <div className="branch-controls">
+          <button
+            className="topic-switcher"
+            aria-label="切换当前分支"
+            aria-haspopup="menu"
+            popoverTarget="topic-picker"
+            disabled={!connected || busy || !snapshot}
+          >
+            <span>{current?.title ?? "等待连接"}</span>
+            <ChevronDown size={13} />
+          </button>
+          <div
+            ref={topicMenu}
+            id="topic-picker"
+            className="topic-options"
+            popover="auto"
+            role="menu"
+            aria-label="选择分支"
+          >
+            {snapshot?.topics.map((topic) => (
               <button
-                role="tab"
+                key={topic.id}
+                role="menuitemradio"
+                aria-checked={topic.id === snapshot.selected_topic_id}
                 disabled={busy || !connected}
-                aria-selected={mobile === "records" && selected?.id === id}
-                title={topic.title}
                 onClick={() => {
-                  setMobile("records");
-                  void activateTopic(id);
+                  topicMenu.current?.hidePopover();
+                  void activateTopic(topic.id);
                 }}
               >
-                {topic.title}
+                <span>
+                  {topic.kind === "trunk" ? "主干" : topic.branch_label} ·{" "}
+                  {topic.title}
+                </span>
+                {topic.id === snapshot.selected_topic_id && <Check size={14} />}
               </button>
-              <button
-                className="close-tab"
-                aria-label={`关闭${topic.title}标签`}
-                onClick={() => {
-                  const index = tabs.indexOf(id);
-                  const remaining = tabs.filter((item) => item !== id);
-                  setTabs(remaining);
-                  if (selected?.id === id) {
-                    const neighbor = remaining[Math.max(0, index - 1)];
-                    if (neighbor) void activateTopic(neighbor);
-                    else setMobile("tree");
-                  }
-                }}
-              >
-                <X size={12} />
-              </button>
-            </div>
-          );
-        })}
+            ))}
+          </div>
+          <button
+            className="new-branch"
+            disabled={!connected || busy || !selected}
+            onClick={() => create()}
+            title="从正在查看的话题创建，并切换终端"
+          >
+            <Plus size={14} />
+            新建分支
+          </button>
+        </div>
       </div>
       <div
         ref={frame}
@@ -460,12 +522,11 @@ export default function Home() {
         >
           <div className="panel-heading">
             <div>
-              <h1>沿着对话向下展开</h1>
-              <p>每个节点是一轮提问、回复与工具调用。</p>
+              <h1>对话轮次</h1>
             </div>
             <button
               className="icon-button"
-              aria-label="新建子话题"
+              aria-label="新建并切换分支"
               disabled={!connected || !selected || busy}
               onClick={() => create()}
             >
@@ -679,15 +740,9 @@ export default function Home() {
           <div className="record-heading">
             <div>
               <span className="eyebrow">
-                {selected?.branch_label ?? "话题记录"} ·{" "}
-                {selected?.kind === "trunk" ? "会话主干" : "本分支主线"}
+                {selected?.branch_label ?? "话题记录"}
               </span>
               <h2>{selected?.title ?? "每条想法，都有来处"}</h2>
-              <p>
-                {selected?.id === snapshot?.selected_topic_id
-                  ? "当前所在位置：从本线最新消息继续，不进入子分支。"
-                  : "正在浏览记录；终端当前话题保持不变。"}
-              </p>
             </div>
             {selected && snapshot && (
               <div className="record-actions">
@@ -796,9 +851,10 @@ export default function Home() {
                     </time>
                     <code>{message.id.slice(0, 8)}</code>
                   </div>
-                  <div className="message-text">
-                    {message.text || "（本条包含工具调用或非文本内容）"}
-                  </div>
+                  <MessageContent
+                    role={message.role}
+                    text={message.text || "（本条包含工具调用或非文本内容）"}
+                  />
                   <div className="message-actions">
                     <button
                       aria-label="复制消息"
@@ -858,30 +914,16 @@ export default function Home() {
           onSubmit={(event) => {
             event.preventDefault();
             if (!snapshot || editor.kind === "closed") return;
-            void command(
-              editor.kind === "create"
-                ? {
-                    action: "create",
-                    session_id: editor.session,
-                    topic_id: editor.parent,
-                    title,
-                    anchor_entry_id: editor.anchor,
-                  }
-                : {
-                    action: "rename",
-                    session_id: editor.session,
-                    topic_id: editor.topic,
-                    title,
-                  },
-            );
+            void command({
+              action: "rename",
+              session_id: editor.session,
+              topic_id: editor.topic,
+              title,
+            });
           }}
         >
-          <h2>{editor.kind === "rename" ? "重命名话题" : "建立子话题"}</h2>
-          <p>
-            {editor.kind === "create"
-              ? "建立后可查看新话题；点击「在此继续」才会切换终端。"
-              : "只改变话题名称，保留消息与归属。"}
-          </p>
+          <h2>重命名话题</h2>
+          <p>只改变话题名称，保留消息与归属。</p>
           <label>
             话题名称
             <input
