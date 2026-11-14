@@ -390,3 +390,10 @@ SQLite schema 2 增加 topics、topic_selection、topic_requests、entry_request
 - 主推理的动态提醒包含 Octo 应用身份、实际 provider/model、操作系统和原生 shell 信息。历史来源使用现有 entry_requests/topic_requests 冻结归属，生成消息位置与 entry_id/topic_id/path 索引。索引追加在末尾，不拆开 assistant 工具调用和 tool_result，不改共享历史或数据库原文。新增提醒计入同一预算门控；摘要仍标为 shared_summary。
 - 工具结果添加显式 is_error，循环沿用该状态。shell 的非零退出、超时或取消不再被记为成功；Windows 原生 shell 提示与实际 cmd.exe 执行相符。网络资料回答要求区分摘要片段与已打开正文，并提供来源链接；没有新增搜索工具。
 - pi SDK 替换、前缀缓存优化、异步记忆与工具产物外置保持后续范围。
+
+
+### 2026-11-14：历史恢复与当前模型选择解耦
+
+本机复现：历史为 deepseek-v4-flash，当前配置为 deepseek-flash，原恢复路径对历史 ID 强校验而失败。历史模型只用于优先选择，不作为读取会话的前置条件；未显式选择模型时，按可用历史选择、同提供商当前模型、当前配置回退。终端内恢复优先使用同提供商当前运行模型；已移除的提供商回退到当前运行/默认配置。显式模型名仍严格校验。
+
+TUI、print、RPC 和会话内 resume 传递解析后的运行选择，不用历史 provider/model 覆盖它。动态提供商保留发现能力，再按当前默认模型回退。模型变化形成 session-model 提示，原消息与话题表不修改，只追加 ModelChangeEntry；该事件沿用 prepared/adopt 提交，取消或失败不留下模型变更，重复恢复不重复追加。

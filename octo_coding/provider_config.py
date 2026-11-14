@@ -1421,6 +1421,23 @@ def resolve_provider_selection(
     return ProviderSelection(provider=provider, model=selected_model)
 
 
+def resolve_restored_provider_selection(
+    settings: ProviderSettings, *, provider_name: str | None, model: str | None,
+    fallback_provider_name: str | None = None, fallback_model: str | None = None,
+) -> ProviderSelection:
+    try:
+        provider = settings.get_provider(provider_name)
+    except ProviderConfigError:
+        try:
+            provider = settings.get_provider(fallback_provider_name)
+        except ProviderConfigError:
+            provider = settings.get_provider()
+    if (provider_name is None or provider.name == provider_name) and model in provider.models:
+        return resolve_provider_selection(settings, provider_name=provider.name, model=model)
+    selected = fallback_model if provider.name == fallback_provider_name and fallback_model in provider.models else None
+    return resolve_provider_selection(settings, provider_name=provider.name, model=selected)
+
+
 def validate_provider_model(provider: ProviderConfig, model: str) -> None:
 
     if model in provider.models:

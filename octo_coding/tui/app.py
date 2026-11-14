@@ -125,6 +125,7 @@ from octo_coding.provider_config import (
     provider_config_from_catalog_entry,
     provider_has_usable_credentials,
     resolve_provider_selection,
+    resolve_restored_provider_selection,
     resolve_startup_thinking_level,
     save_provider_settings,
     upsert_openai_compatible_provider,
@@ -7592,11 +7593,8 @@ def _selection_from_session_record(settings: Any, record: Any | None) -> Provide
     record_provider = getattr(record, "provider_name", None)
     if isinstance(record_provider, str) and record_provider:
         try:
-            return resolve_provider_selection(
-                settings,
-                provider_name=record_provider,
-                model=record_model,
-            )
+            settings.get_provider(record_provider)
+            return resolve_restored_provider_selection(settings, provider_name=record_provider, model=record_model)
         except Exception:
             return None
 
@@ -7742,14 +7740,14 @@ async def run_tui_app(
     selected_provider_name: str = (
         provider_name
         if provider_name is not None
-        else (record.provider_name if record is not None else None)
-        or (selection.provider.name if selection is not None else DEFAULT_PROVIDER_NAME)
+        else (selection.provider.name if selection is not None else None)
+        or (record.provider_name if record is not None else DEFAULT_PROVIDER_NAME)
     )
     selected_model = (
         model
         if explicit_selection and model is not None
-        else (record.model if record is not None else None)
-        or (selection.model if selection is not None else DEFAULT_MODEL)
+        else (selection.model if selection is not None else None)
+        or (record.model if record is not None else DEFAULT_MODEL)
     )
 
 
@@ -7815,7 +7813,7 @@ async def run_tui_app(
         prepared = await prepare_coding_session(
             CodingSessionConfig(
                 provider=initial_provider,
-                model=record.model or selected_model,
+                model=selected_model,
                 cwd=record.cwd,
                 storage=manager.storage_for(record),
                 session_id=record.id,
@@ -7874,7 +7872,8 @@ async def run_tui_app(
         error_notices = (startup_error_notice,) if startup_error_notice else ()
         theme_notices = tuple(diagnostic.format() for diagnostic in theme_diagnostics)
         all_startup_notices = tuple(
-            (*error_notices, *startup_notices, *legacy_notices, *theme_notices)
+            (*error_notices, *startup_notices, *legacy_notices, *theme_notices,
+             *(item.format() for item in session.resource_diagnostics if item.kind == "session-model"))
         )
         resource_conflict_alert = _resource_conflict_alert(
             getattr(session, "resource_diagnostics", ())

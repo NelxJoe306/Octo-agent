@@ -119,6 +119,7 @@ from octo_coding.provider_config import (
     provider_thinking_levels,
     provider_thinking_unavailable_reason,
     resolve_provider_selection,
+    resolve_restored_provider_selection,
     resolve_startup_thinking_level,
     save_default_provider_model,
     save_provider_thinking_level,
@@ -775,6 +776,18 @@ class CodingSession:
 
             session._session_start_pending = True
             session._project_trust_commit_pending = not trust_resolution.cancelled
+            if not pending_initial_entries and state.model and (
+                state.model != session.model or state.provider is not None and state.provider != session.provider_name
+            ):
+                notice = (f"已恢复历史；本次模型：{state.provider or 'unknown'}/{state.model} → "
+                          f"{session.provider_name}/{session.model}。历史消息与话题归属保留。")
+                session._resource_diagnostics += (ResourceDiagnostic(kind="session-model", message=notice),)
+                entry = ModelChangeEntry(parent_id=session._last_parent_id, model=session.model, provider=session.provider_name)
+                # 恢复只追加本次模型选择；沿用准备/采用事务，失败时不改历史。
+                session._pending_initial_entries += (entry,)
+                session._prepared_entries.append(entry)
+                session._state = SessionState.from_entries([*session._state.entries, entry])
+                session._last_parent_id = entry.id
         except BaseException:
 
 
@@ -2813,42 +2826,22 @@ class CodingSession:
         if record.provider_name:
             effective = self._provider_registry.effective(record.provider_name)
             if effective is not None and isinstance(effective.definition, DynamicProvider):
-
-
-                provider_name = record.provider_name
-                model = record.model
+                provider_name, model = record.provider_name, record.model
                 runtime_provider_config = None
-                dynamic_resume = True
-                restore_record_model = True
-            else:
-                provider_name = record.provider_name
-                model = record.model
-                restore_record_model = True
-                if self._provider_settings is None:
-
-
-                    dynamic_resume = True
+                dynamic_resume = restore_record_model = True
+            elif self._provider_settings is not None:
+                saved_config = _provider_config_or_none(self._provider_settings, record.provider_name)
+                if isinstance(saved_config, OpenAICodexProviderConfig) and record.model not in saved_config.models:
+                    provider_name, model = record.provider_name, record.model
                     runtime_provider_config = None
+                    dynamic_resume = restore_record_model = True
                 else:
-                    try:
-                        runtime_provider_config = self._provider_settings.get_provider(
-                            record.provider_name
-                        )
-                    except ProviderConfigError:
-
-
-                        dynamic_resume = True
-                        runtime_provider_config = None
-                    else:
-                        if (
-                            isinstance(runtime_provider_config, OpenAICodexProviderConfig)
-                            and model not in runtime_provider_config.models
-                        ):
-
-                            dynamic_resume = True
-                            runtime_provider_config = None
-                        else:
-                            validate_provider_model(runtime_provider_config, model)
+                    selection = resolve_restored_provider_selection(self._provider_settings,
+                        provider_name=record.provider_name, model=record.model,
+                        fallback_provider_name=self.provider_name, fallback_model=self.model)
+                    provider_name, model = selection.provider.name, selection.model
+                    runtime_provider_config = selection.provider
+                    restore_record_model = True
 
         replacement = await type(self).load(
             CodingSessionConfig(
@@ -2867,8 +2860,8 @@ class CodingSession:
                 provider_name=provider_name,
                 inference_provider=None if dynamic_resume else record.inference_provider,
                 inference_provider_mode=record.inference_provider_mode,
-                requested_provider=provider_name if dynamic_resume else None,
-                requested_model=model if dynamic_resume else None,
+                requested_provider=None,
+                requested_model=None,
                 session_provider_name=record.provider_name,
                 provider_settings=self._durable_provider_settings,
                 runtime_provider_config=runtime_provider_config,
@@ -2886,7 +2879,7 @@ class CodingSession:
                 trust_default=self._config.trust_default,
                 trust_interactive=self._config.trust_interactive,
                 trust_prompt=self._config.trust_prompt,
-                defer_authoritative_writes=dynamic_resume,
+                defer_authoritative_writes=True,
                 owns_initial_provider=dynamic_resume,
             )
         )
@@ -2903,7 +2896,8 @@ class CodingSession:
             await _finish_aborted_session_close(replacement)
             raise
         await self._adopt_replacement(replacement, reason="resume")
-        return f"Resumed session: {record.id}"
+        notice = next((item.message for item in self.resource_diagnostics if item.kind == "session-model"), "")
+        return f"Resumed session: {record.id}" + ("\n" + notice if notice else "")
 
     async def set_session_name(self, name: str) -> str:
 
@@ -4435,7 +4429,7 @@ async def _prepare_provider_selection(
         if effective is not None and isinstance(effective.definition, DynamicProvider):
             dynamic = effective.definition
             model = requested_model
-            if model is None and state.provider == provider_name:
+            if model is None and requested_provider is None and state.provider == provider_name:
                 model = state.model
             if model is None:
                 model = dynamic.default_model
@@ -4462,6 +4456,12 @@ async def _prepare_provider_selection(
                     f"Provider {provider_name} has no selectable models; refresh it explicitly."
                 )
             selected = next((item for item in dynamic.models if item.id == model), None)
+            if selected is None and not explicit:
+                model = (config.model if config.provider_name == provider_name and
+                         any(item.id == config.model for item in dynamic.models) else dynamic.default_model)
+                if model is None and len(dynamic.models) == 1:
+                    model = dynamic.models[0].id
+                selected = next((item for item in dynamic.models if item.id == model), None)
             if selected is None:
                 raise ProviderConfigError(
                     f"Model is not available for provider {provider_name}: {model}"
@@ -4492,8 +4492,16 @@ async def _prepare_provider_selection(
             f"Provider is not available after trusted extension loading: "
             f"{provider_name or config.model}"
         )
-    selected_model = requested_model or (state.model if state.provider == provider_name else None)
-    selected_provider = settings.get_provider(provider_name or settings.default_provider)
+    selected_model = requested_model or (state.model if requested_provider is None and state.provider == provider_name else None)
+    try:
+        selected_provider = settings.get_provider(provider_name or settings.default_provider)
+    except ProviderConfigError:
+        if explicit:
+            raise
+        restored = resolve_restored_provider_selection(settings, provider_name=provider_name, model=selected_model,
+            fallback_provider_name=config.provider_name, fallback_model=config.model)
+        provider_name, selected_model = restored.provider.name, restored.model
+        selected_provider = restored.provider
     if (
         isinstance(selected_provider, OpenAICodexProviderConfig)
         and selected_model is not None
@@ -4526,11 +4534,10 @@ async def _prepare_provider_selection(
         finally:
             if discovery_provider is not None:
                 await discovery_provider.aclose()
-    selection = resolve_provider_selection(
-        settings,
-        provider_name=provider_name,
-        model=selected_model,
-    )
+    selection = (resolve_provider_selection(settings, provider_name=provider_name, model=selected_model)
+                 if explicit else resolve_restored_provider_selection(settings,
+                    provider_name=provider_name, model=selected_model,
+                    fallback_provider_name=config.provider_name, fallback_model=config.model))
     inference_provider = _session_inference_provider(
         config,
         state,
@@ -4634,6 +4641,9 @@ def _initial_model_for_config(config: CodingSessionConfig) -> str:
 
 
 def _runtime_model_for_state(config: CodingSessionConfig, state: SessionState) -> str:
+    if (config.requested_provider is not None or config.requested_model is not None or
+        state.provider is not None and state.provider != config.provider_name):
+        return config.model
     state_model = state.model or config.model
     if config.dynamic_provider is not None:
         return config.model

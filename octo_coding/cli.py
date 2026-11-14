@@ -42,6 +42,7 @@ from octo_coding.provider_config import (
     load_provider_settings,
     provider_kind,
     resolve_provider_selection,
+    resolve_restored_provider_selection,
     resolve_startup_thinking_level,
     save_provider_settings,
     upsert_openai_compatible_provider,
@@ -907,11 +908,12 @@ async def run_openai_rpc_mode(
             settings, provider_name=selected_provider, model=selected_model
         )
     except ProviderConfigError:
-        if (selected_provider or settings.default_provider) != "openai-codex":
+        if resume_session_id is not None and not explicit_selection:
+            selection = resolve_restored_provider_selection(settings, provider_name=selected_provider, model=selected_model)
+        elif (selected_provider or settings.default_provider) == "openai-codex":
+            selection = resolve_provider_selection(settings, provider_name="openai-codex")
+        else:
             raise
-
-
-        selection = resolve_provider_selection(settings, provider_name="openai-codex")
     inference_provider = (
         record.inference_provider
         if resume_session_id is not None
@@ -946,7 +948,7 @@ async def run_openai_rpc_mode(
     session = await CodingSession.load(
         CodingSessionConfig(
             provider=provider,
-            model=selected_model or selection.model,
+            model=selection.model,
             requested_provider=selected_provider if explicit_selection else None,
             requested_model=selected_model if explicit_selection else None,
             session_provider_name=record.provider_name,
@@ -1260,7 +1262,7 @@ async def run_print_mode(
         await session.apply_startup_model_override(model)
     session.extension_runtime.set_ui_bridge(StderrUiBridge())
     for diagnostic in session.resource_diagnostics:
-        if diagnostic.kind == "project-trust":
+        if diagnostic.kind in {"project-trust", "session-model"}:
             typer.echo(diagnostic.format(), err=True)
     await session.emit_pending_session_start()
     renderer = create_event_renderer(
