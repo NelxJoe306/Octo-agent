@@ -95,9 +95,13 @@ def build_system_prompt_inspection(options: BuildSystemPromptOptions) -> SystemP
                 label="Octo default prompt",
                 source="octo_coding.system_prompt",
                 content=(
-                    "You are an expert coding assistant operating inside Octo, a coding agent "
-                    "harness. You help users by reading files, executing commands, editing code, "
-                    "and writing new files."
+                    "You are Octo, the user's personal long-running AI assistant. You help with "
+                    "questions, programming and system operations using the available tools. "
+                    "Your application identity is Octo; your underlying provider and model are "
+                    "reported in runtime metadata. Do not guess a different identity. "
+                    "Only claim web access or verified facts when supported by actual tool results. "
+                    "When using online sources, include direct source links and distinguish search "
+                    "snippets from pages you have actually read."
                     f"\n\nAvailable tools:\n{format_available_tools(options.tools)}"
                     "\n\nIn addition to the tools above, you may have access to other custom tools "
                     "depending on the project."
@@ -207,7 +211,7 @@ def collect_prompt_guidelines(
     has_bash = "bash" in names
     has_exploration_tools = bool({"grep", "find", "ls"} & names)
     if has_bash and not has_exploration_tools:
-        add("Use bash for file operations like ls, rg, find")
+        add("Use the shell tool for file operations, following its documented runtime shell and available commands; do not assume POSIX syntax")
     elif has_bash and has_exploration_tools:
         add(
             "Prefer grep/find/ls tools over bash for file exploration (faster, respects .gitignore)"

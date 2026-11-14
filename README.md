@@ -44,7 +44,7 @@ uv run octo providers
 
 模型、凭据、推理强度、聊天和工具继续在终端使用。在 `web/` 执行 `npm ci`、`npm run build` 后，在运行中的终端输入 `/map`，打开连接当前会话的话题树和记录窗口。
 
-`/topic list` 列出话题，`/topic new <标题>` 建立子话题，`/topic use <ID>` 切换后续提问归属。Web 进入分支或切换标签即同步当前位置，后续提问沿本线最新位置继续。关闭浏览器不会停止终端任务。
+`/topic-list` 列出话题，`/topic-new <标题>` 建立并切换子话题，`/topic-use <ID>` 切换后续提问归属。Web 进入分支或切换标签即同步当前位置，后续提问沿本线最新位置继续。关闭浏览器不会停止终端任务。
 
 见 [Web 运行说明](web/README.md)。
 

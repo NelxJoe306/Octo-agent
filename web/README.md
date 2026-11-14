@@ -36,10 +36,10 @@ cd D:\Octo
 终端也可以独立操作：
 
 ```text
-/topic list
-/topic new 压缩策略
-/topic use <话题ID>
-/topic rename 新名称
+/topic-list
+/topic-new 压缩策略
+/topic-use <话题ID>
+/topic-rename 新名称
 /map
 ```
 
@@ -72,3 +72,13 @@ cd D:\Octo
 - `web/styles/tokens.css`、`web/app/globals.css`：主题、布局与动态状态。
 
 更详细的设计见 [话题地图设计](docs/topic-map.md)。
+
+## 快捷分支与消息显示
+
+顶部的分支选择器可直接切换所有分支；「新建分支」从正在查看的话题创建并立即切换，先使用默认名称，随后可重命名。消息下方的创建按钮以该消息为锚点。创建与选择写入同一 SQLite 事务，不调用模型。主干保持独立身份。
+
+终端使用 `/topic-list`、`/topic-new <标题>`、`/topic-use <唯一名称或完整ID>`、`/topic-rename <标题>`；`/topic-use main` 返回主干。名称重名时要求明确 ID。
+
+回答支持 Markdown 标题、列表、表格、链接、代码块和 KaTeX 公式（`$...$`、`$$...$$`、`\(...\)`、`\[...\]`）；用户输入与工具输出保留纯文本。复制保留原文。原始 HTML 不执行，外部图片显示为链接，公式资源随静态构建提供，不依赖 CDN。
+
+顶部合并会话与连接状态，分支快捷入口固定显示，标签区域独立横向滚动；窄窗使用地图/消息标签切换，宽屏保留可拖拽树窗口。

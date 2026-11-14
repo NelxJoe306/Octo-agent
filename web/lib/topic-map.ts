@@ -86,7 +86,12 @@ export type TopicCommand = {
   session_id: Snapshot["session_id"];
   topic_id: TopicId;
 } & (
-  | { action: "create"; title: string; anchor_entry_id: Message["id"] | null }
+  | {
+      action: "create";
+      title: string;
+      anchor_entry_id: Message["id"] | null;
+      activate: boolean;
+    }
   | { action: "rename"; title: string }
   | { action: "select" }
 );

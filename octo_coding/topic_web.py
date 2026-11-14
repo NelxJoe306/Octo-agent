@@ -24,6 +24,7 @@ class TopicCommand(BaseModel):
     topic_id: str = Field(default='main', min_length=1, max_length=128)
     title: str = Field(default='', max_length=120)
     anchor_entry_id: str | None = Field(default=None, max_length=128)
+    activate: bool = False
 
 
 class TopicWeb:

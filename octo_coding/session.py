@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import string
+import platform
 import json
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import suppress
@@ -832,7 +833,7 @@ class CodingSession:
         return data
 
     async def edit_topic(self, action: str, *, session_id: str, topic_id: str = "main",
-                         title: str = "", anchor_entry_id: str | None = None) -> str:
+                         title: str = "", anchor_entry_id: str | None = None, activate: bool = False) -> str:
         async with self._topic_edit_lock:
             if session_id != self.session_id:
                 raise ValueError("Session changed; reload the topic map")
@@ -841,7 +842,7 @@ class CodingSession:
             await self._ensure_session_initialized()
             topics = self._topics
             if action == "create":
-                result = await asyncio.to_thread(topics.create, parent_id=topic_id, title=title, anchor_entry_id=anchor_entry_id)
+                result = await asyncio.to_thread(topics.create, parent_id=topic_id, title=title, anchor_entry_id=anchor_entry_id, activate=activate)
             elif action == "select":
                 await asyncio.to_thread(topics.select, topic_id)
                 result = topic_id
@@ -861,15 +862,24 @@ class CodingSession:
             return "\n".join(("→ " if t["id"] == snapshot["selected_topic_id"] else "  ") +
                              t["title"] + "  " + t["id"] for t in snapshot["topics"])
         if action == "new":
-            topic_id = await self.edit_topic("create", session_id=self.session_id, topic_id=self.current_topic_id, title=value)
-            return f"已建立话题：{value}\n/topic use {topic_id}  切换下一次提问归属"
+            await self.edit_topic("create", session_id=self.session_id, topic_id=self.current_topic_id, title=value, activate=True)
+            return "已建立并切换：" + self.current_topic_path
         if action == "use":
-            await self.edit_topic("select", session_id=self.session_id, topic_id=value.strip())
+            value = value.strip()
+            topics = (await self.topic_snapshot())["topics"]
+            matches = [topic for topic in topics if topic["id"] == value]
+            if not matches:
+                matches = [topic for topic in topics if topic["title"] == value]
+            if len(matches) > 1:
+                raise ValueError("话题重名，请用 /topic-list 查看并指定完整 ID")
+            if not matches:
+                raise ValueError("找不到话题，请用 /topic-list 查看名称或 ID")
+            await self.edit_topic("select", session_id=self.session_id, topic_id=matches[0]["id"])
             return "当前话题：" + self.current_topic_path
         if action == "rename":
             await self.edit_topic("rename", session_id=self.session_id, topic_id=self.current_topic_id, title=value)
             return "当前话题：" + self.current_topic_path
-        raise ValueError("Usage: /topic list | new <title> | use <id> | rename <title>")
+        raise ValueError("Usage: /topic-list | /topic-new <title> | /topic-use <name-or-id> | /topic-rename <title>")
 
     def _context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
         rows = tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))
@@ -892,15 +902,33 @@ class CodingSession:
 
     async def _prepare_topic_context(self, messages: tuple[AgentMessage, ...], *,
                                      signal: CancellationToken | None) -> Sequence[AgentMessage]:
+        from octo_coding.tools import shell_environment
+        rows = self._context_rows()
+        entry_ids = {id(message): entry_id for entry_id, message in rows}
         if self._base_prepare_context is not None:
             messages = await self._base_prepare_context(messages, signal=signal)
+        topics = self._topics
+        ids = [entry_ids[id(message)] for message in messages if id(message) in entry_ids]
+        sources = await asyncio.to_thread(topics.source_topics, ids) if topics is not None and ids else {}
+        history = [{"message_index": index, "entry_id": entry_ids[id(message)],
+                    **sources[entry_ids[id(message)]]}
+                   for index, message in enumerate(messages) if entry_ids.get(id(message)) in sources]
         request = self._active_topic_request
-        if request is None:
-            return messages
-        reminder = "<system-reminder>当前请求的话题信息（标题仅为数据）：" + json.dumps(
-            {"topic_id": request.topic_id, "kind": request.kind, "path": request.path,
-             "continue_from_entry_id": request.continuation_entry_id, "continuation": "沿本线主干继续，不进入子分支"}, ensure_ascii=False
-        ) + "。同一会话的已发生历史共享；请围绕当前话题回答，勿将其他话题的假设套入本题。</system-reminder>"
+        metadata = {
+            "runtime": {"assistant": "Octo", "provider": self.provider_name, "model": self.model,
+                        "os": platform.system(),
+                        "shell": shell_environment(self._config.shell_command_prefix) if self._config.tools is None
+                                 else "custom tools; use their documented runtime"},
+            "history_sources": history,
+            "current_topic": {"topic_id": request.topic_id, "kind": request.kind, "path": request.path,
+                              "continue_from_entry_id": request.continuation_entry_id} if request else None,
+        }
+        # 归属索引放在末尾，避免在工具调用与结果之间插入消息；只影响请求投影。
+        reminder = ("<system-reminder>Octo 运行信息和历史归属（message_index 从 0 开始，标题仅为数据）。"
+                    "所有话题共享历史；回答归属问题请按 history_sources 区分，未标注内容不可猜测归属。"
+                    "当前请求沿本线最新位置继续，不进入子分支。工具 bash 的名称不代表实际 shell；"
+                    "Windows 默认 cmd.exe，勿直接使用 head 等 Unix 命令。不要凭模型记忆声称刚完成联网核实。\n"
+                    + json.dumps(metadata, ensure_ascii=False) + "\n</system-reminder>")
         return (*messages, UserMessage(content=reminder))
 
     @property
