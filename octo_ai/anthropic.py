@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import replace
 from json import loads
 from typing import Any, cast
 
@@ -77,6 +78,7 @@ class AnthropicProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        self._configured_max_tokens = config.max_tokens
         self._config = config
         self._client = client
         self._owns_client = client is None
@@ -86,6 +88,23 @@ class AnthropicProvider:
             _request_output_tokens(self._config.max_tokens, self._config.thinking_budget_tokens),
             self._config.oauth_system_prompt or "",
         )
+
+    def configure_request_budget(
+        self, *, context_window: int, safety_margin: int,
+        output_override: int | None = None, model_max_output_tokens: int | None = None,
+    ) -> RequestTokenBudget:
+        output = resolve_request_output_tokens(
+            output_override if output_override is not None else self._configured_max_tokens,
+            default=DEFAULT_MAX_TOKENS, context_window=context_window,
+            safety_margin=safety_margin, model_max_output_tokens=model_max_output_tokens,
+        )
+        effective = _request_output_tokens(output, self._config.thinking_budget_tokens)
+        if model_max_output_tokens is not None and effective > model_max_output_tokens:
+            raise ValueError("Thinking budget exceeds the model output maximum")
+        if output_override is not None and effective > output_override:
+            raise ValueError("Output override must cover the thinking budget plus 1024 tokens")
+        self._config = replace(self._config, max_tokens=effective)
+        return self.request_token_budget()
 
     async def aclose(self) -> None:
 

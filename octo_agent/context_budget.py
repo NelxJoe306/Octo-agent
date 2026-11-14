@@ -29,8 +29,6 @@ class ContextBudgetPolicy:
             raise ValueError("Invalid context budget safety or image reserve")
         if not math.isfinite(self.soft_ratio) or not 0 < self.soft_ratio <= 1:
             raise ValueError("Context budget soft_ratio must be in (0, 1]")
-        if self.hard_input_limit <= 0:
-            raise ValueError("No input capacity remains after output reserve and safety margin")
 
     @property
     def hard_input_limit(self) -> int:
@@ -66,6 +64,7 @@ class ContextBudgetDecision:
             f"remaining={self.remaining_input}, soft={self.soft_input_limit}, "
             f"hard={self.hard_input_limit}, output={self.output_reserve} "
             f"({self.output_source}), safety={self.safety_margin}"
+            + ("; output reserve and safety margin leave no input capacity" if self.hard_input_limit <= 0 else "")
         )
 
 

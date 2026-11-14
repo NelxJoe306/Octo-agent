@@ -135,7 +135,8 @@ async def create_dynamic_model_provider(
         max_retries=transport.max_retries,
         max_retry_delay_seconds=transport.max_retry_delay_seconds,
         api=selected_api,
-        max_tokens=selected_model.max_tokens,
+        context_window=selected_model.context_window,
+        model_max_output_tokens=selected_model.max_tokens,
         supports_images=(
             selected_model.input_modalities is not None
             and "image" in selected_model.input_modalities

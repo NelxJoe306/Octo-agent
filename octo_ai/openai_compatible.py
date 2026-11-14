@@ -69,12 +69,31 @@ class OpenAICompatibleProvider:
         *,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._config = replace(config, max_tokens=resolve_request_output_tokens(config.max_tokens))
+        self._configured_max_tokens = config.max_tokens
+        self._config = replace(config, max_tokens=resolve_request_output_tokens(
+            config.max_tokens, context_window=config.context_window,
+            model_max_output_tokens=config.model_max_output_tokens,
+        ))
         self._client = client
         self._owns_client = client is None
 
     def request_token_budget(self) -> RequestTokenBudget:
-        return RequestTokenBudget(resolve_request_output_tokens(self._config.max_tokens))
+        return RequestTokenBudget(
+            resolve_request_output_tokens(self._config.max_tokens), context_window=self._config.context_window,
+        )
+
+    def configure_request_budget(
+        self, *, context_window: int, safety_margin: int,
+        output_override: int | None = None, model_max_output_tokens: int | None = None,
+    ) -> RequestTokenBudget:
+        maximum = model_max_output_tokens or self._config.model_max_output_tokens
+        output = resolve_request_output_tokens(
+            output_override if output_override is not None else self._configured_max_tokens,
+            context_window=min(context_window, self._config.context_window or context_window), safety_margin=safety_margin,
+            model_max_output_tokens=maximum,
+        )
+        self._config = replace(self._config, max_tokens=output)
+        return self.request_token_budget()
 
     async def aclose(self) -> None:
 

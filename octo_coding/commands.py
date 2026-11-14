@@ -495,6 +495,9 @@ def _status_command(context: CommandContext) -> CommandResult:
                 f"messages={context_usage.message_tokens}, "
                 f"tools={context_usage.tool_tokens}",
             )
+    budget_error = getattr(session, "last_context_budget_error", None)
+    if budget_error is not None:
+        lines.append("Last context budget configuration error: " + budget_error)
     budget = getattr(session, "last_context_budget", None)
     if budget is not None:
         lines.append("Last main request: " + budget.summary())

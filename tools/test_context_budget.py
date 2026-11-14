@@ -63,7 +63,6 @@ class BudgetTests(unittest.IsolatedAsyncioTestCase):
         for values in (
             {"context_window": 0}, {"output_reserve": 0}, {"safety_margin": -1},
             {"soft_ratio": 0}, {"soft_ratio": float("nan")}, {"image_reserve": 0},
-            {"context_window": 100},
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 ContextBudgetPolicy(**({"context_window": 10000, "output_reserve": 100} | values))

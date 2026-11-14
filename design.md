@@ -212,23 +212,27 @@ hard_input_limit = W - O - M
 soft_limit = min(floor(W * 0.80), hard_input_limit)
 ```
 
-优先使用当前 provider/model 的 runtime `effective_context_window`，没有 runtime 数据时沿用原有模型配置窗口和 128000 回退窗口。`CodingSessionConfig` 可设置 `context_safety_margin`、`context_soft_ratio`、`context_image_reserve`；尚未增加 CLI 参数或配置文件字段。配置的硬输入容量必须大于零。
+优先使用当前 provider/model 的 runtime `effective_context_window`，没有 runtime 数据时沿用原有模型配置窗口和 128000 回退窗口。`CodingSessionConfig` 可设置 `context_safety_margin`、`context_soft_ratio`、`context_image_reserve`；尚未增加 CLI 参数或配置文件字段。正常发送需要硬输入容量大于零；输出预留与安全余量耗尽输入容量时仍生成 `BLOCK` 决策并抛出 `ContextBudgetExceeded`，不再因构造策略而丢失诊断。
 
 三个决策：输入低于软水位为 `ALLOW`；达到软水位且不超过硬上限为 `NEEDS_COMPACTION`，本轮继续；超过硬上限为 `BLOCK`，抛出 `ContextBudgetExceeded`，不会调用本次 provider。恰好等于硬上限允许发送。软信号本阶段不触发第二套摘要，原有会话级自动/手动压缩继续保留，其与新 Harness 的统一接入放在下一切片。
 
-输出限额通过 `octo_ai/model_limits.py` 的 `RequestBudgetProvider.request_token_budget()` 读取，与适配器构造实际请求使用同一个值。OpenAI Chat、Responses、Google、Mistral 未配置输出上限时明确发送 16384；已有模型 `max_tokens` 优先，可能改变原先依赖远端默认值时的单次回复长度。Anthropic 保留原有 4096 默认值，思考预算存在时同一函数将输出上限提升到至少 `thinking_budget + 1024`，OAuth 附加系统文本也纳入输入估算。
+输出限额通过 `octo_ai/model_limits.py` 的 `RequestBudgetProvider.request_token_budget()` 读取，与适配器构造实际请求使用同一个值。`ConfigurableRequestBudgetProvider.configure_request_budget()` 在主调用前将有效窗口、余量和显式覆盖应用到真实请求配置。标准静态/动态工厂分别传递模型窗口与模型输出最大值，不把能力上限当成本次输出目标。
 
-Codex 原有传输不发送输出上限，本阶段不添加不受支持的字段；预留 runtime 或配置中的模型 `max_output_tokens/max_tokens`，来源标为 `model_maximum`。无法解析时明确报配置错误。自定义适配器可实现 `RequestBudgetProvider`，或显式设置 `CodingSessionConfig.context_output_reserve_tokens`，后者标为 `configured_reserve`，只代表调用者承诺的预留，不能宣称已限制远端实际输出。
+OpenAI Chat、Responses、Google、Mistral 未显式指定输出上限时，取 `min(16384, 模型输出最大值（已知时）, max(1, W // 4), max(1, W - M - 1))`；W 同时受会话有效窗口与适配器已知窗口约束。例：8192 窗口、8192 输出能力、安全余量 1024，默认请求输出为 2048，硬输入上限为 5120。该比例是保留输入空间的默认策略，可以显式覆盖，不是模型能力声明。`context_output_reserve_tokens` 对这些原生适配器会同时覆盖真实请求参数和预留；超出模型能力的覆盖明确报错，覆盖耗尽输入容量则生成 `BLOCK`。缺少窗口信息的直接适配器调用仍回退 16384，实际 `CodingSession` 调用前会按解析到的窗口重新计算。
+
+Anthropic 保留 4096 默认候选，未配置时也受窗口限制；思考预算存在时输出至少为 `thinking_budget + 1024`，OAuth 附加系统文本纳入估算。显式覆盖不足以容纳思考预算时明确报错，不降低账面预留后继续发送更大的真实输出上限。
+
+Codex 原有传输不发送输出上限，本阶段不添加不受支持的字段；预留 runtime 或配置中的模型 `max_output_tokens/max_tokens`，来源标为 `model_maximum`。无法解析时明确报配置错误。自定义适配器可实现 `RequestBudgetProvider`；需要修改真实输出参数时另外实现 `ConfigurableRequestBudgetProvider`。只读预算接口不能完成不一致的覆盖时明确报错，禁止只降低账面预留。未提供预算接口且输出最大值未知时，可显式设置 `CodingSessionConfig.context_output_reserve_tokens`，标为 `configured_reserve`，只代表调用者承诺的预留，不能宣称已限制远端实际输出。
 
 估算每次从最终准备视图重新计算，包含 system、工具名称/说明/JSON schema、历史文本、思考/签名、工具调用参数与结果、摘要/话题提醒和当前输入，不复用可能对应旧投影的 provider usage。ASCII 文本按约 4 字符/token，非 ASCII 按 UTF-8 字节保守估算，附消息和工具封装余量；图片默认每张预留 4096，可配置。这些都是估算，不是 provider tokenizer；未知窗口的回退和图片预算也不能保证远端绝不超窗。远端超窗恢复属于后续切片。
 
 ### 5.6 诊断、恢复与验收
 
-每次主调用产生 `ContextBudgetEvent`，只携带数字、决策、预留来源与阈值，不保存完整输入。`CodingSession.last_context_budget` 留存最近一次决策；终端 `/session` 展示最近主请求的估算、剩余输入、软硬上限、输出预留、安全余量和组成。软水位产生终端提醒，硬拦截的异常包含原因。主推理之外的自动命名和旧摘要请求不经过这一 Gate。
+每次主调用产生 `ContextBudgetEvent`，只携带数字、决策、预留来源与阈值，不保存完整输入。`CodingSession.last_context_budget` 留存最近一次决策；终端 `/session` 展示最近主请求的估算、剩余输入、软硬上限、输出预留、安全余量和组成。软水位产生终端提醒，硬拦截的异常包含原因。主推理之外的自动命名和旧摘要请求不经过这一 Gate。无法解析限额、无效覆盖等配置错误保存在 `last_context_budget_error`，终端 `/session` 展示具体原因；配置错误发生时可能已按原有流程保存本轮用户输入，但不会静默丢失失败诊断。
 
 门控不裁剪历史、不写摘要、不增添虚构 assistant 错误消息；拦截时本轮用户输入与已执行完的工具结果仍按原有流程保存在 SQLite，历史正文、话题归属与原有记录不被重写。调整限额后可以通过 continue 恢复，换会话时回调重新绑定到当前 `CodingSession`。单次输入快照调试开关仅为后续预留，本阶段没有实现。
 
-验收使用 `tools/test_context_budget.py` 的假 provider、真实 SQLite 临时库和 `httpx.MockTransport`：验证软水位允许发送、硬上限等值允许/超出拦截、准备后提醒计入预算、完整输入组成、工具大结果后拦截、steering/follow-up、取消、恢复、有效窗口、输出参数与预留一致、状态查看、会话替换和持久化归属。本阶段没有调用真实模型 API，也没有新增依赖。
+验收使用 `tools/test_context_budget.py` 的假 provider、真实 SQLite 临时库和 `httpx.MockTransport`：验证软水位允许发送、硬上限等值允许/超出拦截、准备后提醒计入预算、完整输入组成、工具大结果后拦截、steering/follow-up、取消、恢复、有效窗口、输出参数与预留一致、状态查看、会话替换和持久化归属。新增 `tools/test_small_window_budget.py` 覆盖固定小窗口配置的真实标准工厂、显式覆盖和错误诊断，以及 Chat/Responses/Google/Mistral 的 56 组窗口/覆盖组合、窗口缩小、动态工厂和 Anthropic 思考预算。所有请求均由 MockTransport 接收。本阶段没有调用真实模型 API，也没有新增依赖。
 
 ## 6. 长内容外置与会话压缩
 
