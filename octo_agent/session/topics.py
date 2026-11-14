@@ -215,26 +215,33 @@ class SessionTopics:
             turn['title'] = turn['title'] or '对话与工具记录'
         return list(turns.values())
 
-    def snapshot(self, topic_id: str | None = None, before: int = 9223372036854775807) -> dict:
+    def snapshot(self, topic_id: str | None = None, before: int = 9223372036854775807, *, after: int | None = None) -> dict:
         topics = self.topics()
         selected = self.selected_id
         viewed = topic_id or selected
         if viewed not in {topic['id'] for topic in topics}:
             raise ValueError('Unknown topic')
         with self.storage.database.connection() as connection:
-            rows = connection.execute('''SELECT e.id, e.seq, e.body_json, r.request_id FROM session_entries e
+            forward = after is not None
+            comparator, order, cursor = ('>', 'ASC', after) if forward else ('<', 'DESC', before)
+            rows = connection.execute(f'''SELECT e.id, e.seq, e.body_json, r.request_id FROM session_entries e
                 LEFT JOIN entry_requests a ON a.session_id=e.session_id AND a.entry_id=e.id
                 LEFT JOIN topic_requests r ON r.session_id=a.session_id AND r.request_id=a.request_id
-                WHERE e.session_id=? AND COALESCE(r.topic_id, 'main')=? AND e.seq<?
+                WHERE e.session_id=? AND COALESCE(r.topic_id, 'main')=? AND e.seq{comparator}?
                 AND json_extract(e.body_json, '$.type') IN ('message', 'custom_message')
-                ORDER BY e.seq DESC LIMIT 101''', (self.session_id, viewed, before)).fetchall()
-            counts = dict(connection.execute('''SELECT COALESCE(r.topic_id, 'main'), COUNT(*) FROM session_entries e
+                ORDER BY e.seq {order} LIMIT 101''', (self.session_id, viewed, cursor)).fetchall()
+            statistics = {topic: (count, first, last) for topic, count, first, last in connection.execute('''
+                SELECT COALESCE(r.topic_id, 'main'), COUNT(*), MIN(e.seq), MAX(e.seq) FROM session_entries e
                 LEFT JOIN entry_requests a ON a.session_id=e.session_id AND a.entry_id=e.id
                 LEFT JOIN topic_requests r ON r.session_id=a.session_id AND r.request_id=a.request_id
                 WHERE e.session_id=? AND json_extract(e.body_json, '$.type') IN ('message', 'custom_message')
-                GROUP BY COALESCE(r.topic_id, 'main')''', (self.session_id,)).fetchall())
+                GROUP BY COALESCE(r.topic_id, 'main')''', (self.session_id,)).fetchall()}
+        page = rows[:100] if forward else list(reversed(rows[:100]))
+        _, first, last = statistics.get(viewed, (0, None, None))
+        first_cursor = page[0][1] if page else None
+        last_cursor = page[-1][1] if page else after
         messages = []
-        for entry_id, seq, body, request_id in reversed(rows[:100]):
+        for entry_id, seq, body, request_id in page:
             entry = entry_from_json_line(body)
             if isinstance(entry, MessageEntry):
                 message = entry.message
@@ -244,9 +251,11 @@ class SessionTopics:
                 from octo_agent.messages import content_text
                 messages.append(dict(id=entry_id, seq=seq, role='custom', text=content_text(entry.content),
                                      request_id=request_id, timestamp=entry.timestamp))
-        return dict(topics=[{**topic, 'message_count': counts.get(topic['id'], 0), 'latest_entry_id': self.latest_entry_id(topic['id'])} for topic in topics],
+        return dict(topics=[{**topic, 'message_count': statistics.get(topic['id'], (0, None, None))[0], 'latest_entry_id': self.latest_entry_id(topic['id'])} for topic in topics],
                     selected_topic_id=selected, viewed_topic_id=viewed, messages=messages, turns=self.rounds(),
-                    has_more=len(rows) > 100, before=rows[min(99, len(rows)-1)][1] if rows else None)
+                    has_more=first is not None and first_cursor is not None and first < first_cursor,
+                    before=first_cursor, after=last_cursor,
+                    has_newer=last is not None and (last_cursor is None or last > last_cursor))
 
     def locate_entry(self, entry_id: str) -> dict:
         with self.storage.database.connection() as connection:

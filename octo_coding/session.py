@@ -817,11 +817,11 @@ class CodingSession:
             with suppress(Exception):
                 listener()
 
-    async def topic_snapshot(self, topic_id: str | None = None, before: int = 9223372036854775807) -> dict:
+    async def topic_snapshot(self, topic_id: str | None = None, before: int = 9223372036854775807, *, after: int | None = None) -> dict:
         if self._topics is None:
             raise ValueError("Topics require a managed SQLite session")
         topics = self._topics
-        snapshot = await asyncio.to_thread(topics.snapshot, topic_id, before)
+        snapshot = await asyncio.to_thread(topics.snapshot, topic_id, before, after=after)
         if topics is not self._topics:
             raise ValueError("Session changed; reload the topic map")
         snapshot.update(session_id=self.session_id, title=self.session_title or "未命名会话",

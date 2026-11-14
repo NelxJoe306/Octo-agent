@@ -1123,3 +1123,8 @@ dialog label {
   background: var(--sunken);
   color: var(--green);
 }
+
+.newer-page {
+  min-height: 48px;
+  text-align: center;
+}

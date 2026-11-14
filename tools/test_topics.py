@@ -392,5 +392,57 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stored[0].is_error)
 
 
+
+    async def test_selected_old_node_can_page_forward_to_latest_without_other_topics(self):
+        session, provider, config=await self.make_session()
+        topics=SessionTopics(config.storage)
+        child=topics.create(parent_id='main',title='paged branch')
+        request=topics.capture(child)
+        main_request=topics.capture('main')
+        expected=[]
+        parent=None
+        for number in range(235):
+            entry=MessageEntry(parent_id=parent,message=UserMessage(content=f'branch-{number}'))
+            topics.append_message(entry,request)
+            expected.append(entry.id)
+            parent=entry.id
+            if number % 20 == 0:
+                other=MessageEntry(parent_id=parent,message=UserMessage(content='other topic'))
+                topics.append_message(other,main_request)
+                parent=other.id
+        anchor=topics.locate_entry(expected[4])
+        page=await session.topic_snapshot(child,before=anchor['seq']+1)
+        found=[message['id'] for message in page['messages']]
+        self.assertEqual(found,expected[:5])
+        self.assertTrue(page['has_newer'])
+        while page['has_newer']:
+            page=await session.topic_snapshot(child,after=page['after'])
+            self.assertLessEqual(len(page['messages']),100)
+            found.extend(message['id'] for message in page['messages'])
+        self.assertEqual(found,expected)
+        self.assertEqual(len(found),len(set(found)))
+        self.assertEqual(provider.calls,[])
+
+    async def test_web_forward_cursor_and_invalid_ranges(self):
+        session, provider, config=await self.make_session()
+        topics=SessionTopics(config.storage)
+        request=topics.capture('main')
+        first=MessageEntry(message=UserMessage(content='older'))
+        second=MessageEntry(parent_id=first.id,message=UserMessage(content='latest'))
+        topics.append_message(first,request); topics.append_message(second,request)
+        seq=topics.locate_entry(first.id)['seq']
+        directory=self.base/'paging-static';directory.mkdir();(directory/'index.html').write_text('map')
+        server=TopicWeb(session,directory=directory)
+        self.addCleanup(server.close)
+        async with httpx.AsyncClient(trust_env=False,headers={'X-Octo-Token':server.token}) as client:
+            response=await client.get(server.origin+f'/api/snapshot?topic_id=main&after={seq}')
+            self.assertEqual(response.status_code,200)
+            self.assertEqual([message['id'] for message in response.json()['messages']],[second.id])
+            for query in ['after=-1','after=abc','before=9&after=1','after=9223372036854775808']:
+                response=await client.get(server.origin+'/api/snapshot?'+query)
+                self.assertEqual(response.status_code,400,query)
+        self.assertEqual(provider.calls,[])
+
+
 if __name__ == '__main__':
     unittest.main()

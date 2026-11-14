@@ -49,6 +49,8 @@ export const snapshotSchema = z
     ),
     has_more: z.boolean(),
     before: z.number().nullable(),
+    after: z.number().int().nonnegative().nullable().default(null),
+    has_newer: z.boolean().default(false),
   })
   .superRefine((snapshot, context) => {
     const ids = new Set(snapshot.topics.map((topic) => topic.id));

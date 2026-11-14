@@ -117,10 +117,13 @@ class _Handler(SimpleHTTPRequestHandler):
                 self._events()
             elif parsed.path == '/api/snapshot':
                 args = parse_qs(parsed.query)
+                if 'before' in args and 'after' in args:
+                    raise ValueError('Use only one cursor direction')
                 before = int(args.get('before', ['9223372036854775807'])[0])
-                if not 0 < before <= 9223372036854775807:
+                after = int(args['after'][0]) if 'after' in args else None
+                if not 0 < before <= 9223372036854775807 or after is not None and not 0 <= after <= 9223372036854775807:
                     raise ValueError('Invalid cursor')
-                data = self._call(self.owner.session.topic_snapshot(args.get('topic_id', [None])[0], before))
+                data = self._call(self.owner.session.topic_snapshot(args.get('topic_id', [None])[0], before, after=after))
                 self._json(200, data)
             elif parsed.path == '/api/anchor':
                 args = parse_qs(parsed.query)
