@@ -1,17 +1,51 @@
-# Octo Web
+# Octo 话题地图
 
-TypeScript + Next.js 的桌面风格 Web 前端，源码集中在本目录。
+终端是 Octo 的主入口。Web 只展示当前终端会话的话题树与消息记录，不提供聊天、模型配置或工具执行。
 
-## 运行
+## 打开
 
-在 `D:\Octo\web` 执行：
+首次构建，在 `D:\Octo\web` 执行：
 
 ```powershell
 npm ci
-npm run dev
+npm run build
 ```
 
-打开 http://127.0.0.1:18300 。开发服务只绑定本机。
+启动终端：
+
+```powershell
+cd D:\Octo
+.\.venv\Scripts\octo.exe
+```
+
+在运行中的终端输入 `/map`。它会打开附着当前 `CodingSession` 的浏览器窗口，使用动态本机端口。不要直接双击 HTML 或用普通静态服务器代替 `/map`。
+
+关闭浏览器不影响终端任务；退出终端会关闭接口。终端内新建或恢复会话时，已打开的话题地图随之更新。刷新页面后继续使用当前窗口保存的连接信息。
+
+## 使用
+
+- 地图按深度分层，用父子连线区分主干和分支，可点击「适应窗口」。
+- 进入话题在顶部打开标签，重复访问复用标签；可关闭标签并随时返回地图。刷新后从地图重新开始。
+- 点击节点打开分支标签并定位到该分支最新记录；进入分支或切换标签即同步终端当前位置。
+- 新建子话题、从消息建立子话题和重命名都由 Python 写入 SQLite。新建后打开该分支并同步终端当前位置。
+- 当前请求与排队输入在提交时冻结话题。生成中切换话题，不改变已提交请求的归属。
+- 消息中的「复制」复制文本；子话题中的「定位原文」按稳定消息 ID 回到讨论起点。
+- 支持搜索、折叠、缩放，以及拖拽/键盘调整树和记录之间的分隔条。窄窗口通过页签切换树与记录。
+- 记录每页最多 100 条，可以查看更早记录并回到最新。工具调用和图片等非文本内容目前仅显示文本或占位提示；完整生成过程继续在终端查看。
+
+终端也可以独立操作：
+
+```text
+/topic list
+/topic new 压缩策略
+/topic use <话题ID>
+/topic rename 新名称
+/map
+```
+
+模型、API Key、OAuth、推理强度与工具支持继续使用原有终端能力和本机配置。Web 不读取凭据，也不调用模型。
+
+## 开发与验证
 
 ```powershell
 npm test
@@ -19,52 +53,22 @@ npm run typecheck
 npm run build
 ```
 
-生产构建静态导出到 `out/`，可由普通静态服务器托管。依赖精确版本和完整传递依赖记录在 `package.json` 与 `package-lock.json`。
+`npm run dev` 只用于开发静态页面；真实会话接口由终端 `/map` 提供。运行时使用静态导出 `out/`，不需要另起 Node 服务。
 
-## 这一版可以体验什么
+Python 检查使用临时目录与假模型：
 
-- 左侧会话列表、搜索、置顶、新建，以及每会话独立草稿。
-- 中间消息时间线、演示流式回复、停止、复制；切换会话不改变回复归属。
-- 底部输入、模式和模型选择；已去掉项目分组与项目/运行环境条。附件仅预览文件名。
-- 右侧可收起的对话树预留窗口；没有实现树、节点或分支操作。左右边界支持拖拽调宽、方向键调节和双击复位。
-- 设置中的主题、字号、输入提示和演示速度，以及选中、悬停、按压、键盘焦点和减少动态状态。
-
-当前是**本地交互预览**：回复来自前端定时器，没有调用模型、工具或 Python 后端；会话、界面偏好与当前模型选择存在页面内存，刷新恢复默认。模型定义来自用户选择的本机 JSON 文件。它没有接入已有 SQLite 会话存储。
+```powershell
+cd D:\Octo
+.\.venv\Scripts\python.exe -B -m unittest discover -s tools -p test_topics.py -v
+```
 
 ## 实现位置
 
-- `app/page.tsx`：页面布局、交互与演示流式调度。
-- `lib/chat.ts`：会话状态机、固定请求归属和停止守卫；`lib/chat.test.ts` 验证行为。
-- `components/settings.tsx`：原生 dialog 与设置控件。
-- `components/local-models.tsx`、`lib/models.ts`：本机配置文件访问、编辑、校验和模型能力。
-- `components/model-picker.tsx`：按模型名称/ID 搜索、选择与专属推理强度。
-- `components/resize-divider.tsx`：Pointer Capture 拖拽及键盘分隔条。
-- `styles/tokens.css`、`app/globals.css`：样式、状态和动效。
-- [桌面设计与实现记录](docs/desktop-design.md)。
-- [参考源码证据](docs/reference-evidence.json) 与 [核对工具](tools/audit_reference.py)。
+- `octo_agent/session/topics.py`：话题操作、稳定消息定位、请求与消息原子归属。
+- `octo_coding/session.py`：冻结请求、排队归属、话题 reminder 与事件。
+- `octo_coding/topic_web.py`：附着现有会话的本机 HTTP/SSE 接口。
+- `octo_coding/tui/app.py`：话题状态提示、`/topic` 和 `/map`。
+- `web/app/page.tsx`、`web/lib/topic-map.ts`：视图与响应校验。
+- `web/styles/tokens.css`、`web/app/globals.css`：主题、布局与动态状态。
 
-## 核对参考证据
-
-```powershell
-python tools/audit_reference.py "参考预览根目录" --output docs/reference-evidence.json --check
-```
-
-会话页参考用户提供的 Codex 截图；设置与控件参考 agentes。原预览包没有作为运行依赖，也没有被修改。
-
-
-## 本机模型配置
-
-打开「设置 → 模型 → 打开配置文件」，选择自己的 JSON。可从 [示例文件](docs/octo-models.example.json) 复制后修改；示例名称与 ID 只是占位，推理能力也需要按实际模型填写。模型配置不经过服务器，也不写入 localStorage。
-
-- `name` 为显示名称，`id` 为调用时的模型 ID，`provider` 为来源名称，`baseUrl` 为可选 HTTP/HTTPS 地址。
-- 只给支持强度调节的模型添加 `reasoning.options` 与 `reasoning.default`；选项 value 为实际参数值，label 为显示文字。
-- 「应用到预览」只更新当前页面；「保存配置文件」才写回本机文件。保存前会检查文件是否被外部修改。
-- 支持 File System Access 的浏览器通过文件选择器授予读写；不支持时通过文件导入及显式下载链接导出。重新编辑会使旧下载链接失效，避免保存旧内容。
-- 刷新后需要重新打开文件。当前尚未接入 Python 配置加载器、凭据或真实模型调用；本文件是前端配置合同。
-
-浏览器文件 API 参考：[MDN FileSystemFileHandle](https://developer.mozilla.org/en-US/docs/Web/API/FileSystemFileHandle)。
-
-
-## 窗口适配
-
-按容器实际宽度切换：760px以上保持三栏并为聊天保留至少320px；600–759px左栏收进菜单；不足600px右窗采用独立视图并提供返回对话。窗口变矮时收紧间距，避免输入框越界。窗口大小变化不改会话与生成结果归属。
+更详细的设计见 [话题地图设计](docs/topic-map.md)。

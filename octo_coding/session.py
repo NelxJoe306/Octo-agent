@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import string
+import json
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
@@ -9,7 +10,7 @@ from os import environ
 from pathlib import Path
 from typing import Literal
 
-from octo_agent.events import AgentEndEvent, AgentEvent, MessageEndEvent, ToolExecutionEndEvent
+from octo_agent.events import AgentEndEvent, AgentEvent, MessageStartEvent, MessageEndEvent, ToolExecutionEndEvent
 from octo_agent.harness import AgentHarness, AgentHarnessConfig, QueuedMessages
 from octo_agent.messages import (
     AgentMessage,
@@ -20,7 +21,7 @@ from octo_agent.messages import (
     message_text,
     sum_usage,
 )
-from octo_agent.provider import ModelProvider
+from octo_agent.provider import CancellationToken, ModelProvider
 from octo_agent.provider_events import AssistantDoneEvent, AssistantErrorEvent, TextDeltaEvent
 from octo_agent.session import (
     BranchSummaryEntry,
@@ -37,6 +38,7 @@ from octo_agent.session import (
     SQLiteSessionStorage,
     ThinkingLevelChangeEntry,
 )
+from octo_agent.session.topics import SessionTopics, TopicRequest
 from octo_agent.session.entries import SessionEntry
 from octo_agent.session.jsonl import entry_to_json_line
 from octo_agent.session.tree import SessionTreeError, path_to_entry
@@ -174,7 +176,7 @@ SESSION_NAME_SYSTEM_PROMPT = (
     "You write concise coding-agent session names. Reply with only a short title, "
     "maximum four words, no quotes, no punctuation-only output."
 )
-TREE_RUNNING_MESSAGE = "Octo is still working. Press Escape to interrupt before using /tree."
+TREE_RUNNING_MESSAGE = "The current agent run must finish before changing the session history."
 
 
 async def _await_cleanup_completion[CleanupResult](
@@ -327,6 +329,7 @@ class _PendingMessageWrite:
 
     message: AgentMessage
     entry: MessageEntry | CustomMessageEntry
+    request: TopicRequest | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,6 +462,15 @@ class CodingSession:
         self._persisted_message_ids: set[int] = set()
         self._ended_message_ids: set[int] = set()
         self._pending_message_writes: dict[int, _PendingMessageWrite] = {}
+        self._topics = SessionTopics(config.storage) if isinstance(config.storage, SQLiteSessionStorage) else None
+        self._active_topic_request: TopicRequest | None = None
+        self._topic_message_requests: dict[int, tuple[AgentMessage, TopicRequest]] = {}
+        self._topic_edit_lock = asyncio.Lock()
+        self._topic_display_path: str | None = None
+        self._topic_listeners: list[Callable[[], None]] = []
+        self._base_prepare_context = self._harness.config.prepare_context
+        if self._topics is not None:
+            self._harness.config.prepare_context = self._prepare_topic_context
         self._attach_persistence_listener()
 
     @classmethod
@@ -767,6 +779,109 @@ class CodingSession:
             await _finish_aborted_session_close(session)
             raise
         return session
+
+    @property
+    def current_topic_id(self) -> str:
+        return self._topics.selected_id if self._topics else "main"
+
+    @property
+    def current_topic_path(self) -> str:
+        if self._topic_display_path is None:
+            self._topic_display_path = " / ".join(self._topics.capture().path) if self._topics else "主线"
+        return self._topic_display_path
+
+    def subscribe_topics(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self._topic_listeners.append(listener)
+        def unsubscribe() -> None:
+            with suppress(ValueError):
+                self._topic_listeners.remove(listener)
+        return unsubscribe
+
+    def _notify_topics(self) -> None:
+        for listener in tuple(self._topic_listeners):
+            with suppress(Exception):
+                listener()
+
+    async def topic_snapshot(self, topic_id: str | None = None, before: int = 9223372036854775807) -> dict:
+        if self._topics is None:
+            raise ValueError("Topics require a managed SQLite session")
+        topics = self._topics
+        snapshot = await asyncio.to_thread(topics.snapshot, topic_id, before)
+        if topics is not self._topics:
+            raise ValueError("Session changed; reload the topic map")
+        snapshot.update(session_id=self.session_id, title=self.session_title or "未命名会话",
+                        running=self._harness.is_running,
+                        active_topic_id=self._active_topic_request.topic_id if self._active_topic_request else None)
+        return snapshot
+
+    def _finish_topic_run(self) -> None:
+        self._active_topic_request = None
+        retained = self._harness.queued_messages
+        queued_ids = {id(message) for message in (*retained.steering, *retained.follow_up)}
+        self._topic_message_requests = {key: value for key, value in self._topic_message_requests.items() if key in queued_ids}
+        self._notify_topics()
+
+    async def locate_topic_entry(self, entry_id: str) -> dict:
+        if self._topics is None:
+            raise ValueError("Topics require a managed SQLite session")
+        topics = self._topics
+        data = await asyncio.to_thread(topics.locate_entry, entry_id)
+        if topics is not self._topics:
+            raise ValueError("Session changed; reload the topic map")
+        return data
+
+    async def edit_topic(self, action: str, *, session_id: str, topic_id: str = "main",
+                         title: str = "", anchor_entry_id: str | None = None) -> str:
+        async with self._topic_edit_lock:
+            if session_id != self.session_id:
+                raise ValueError("Session changed; reload the topic map")
+            if self._topics is None:
+                raise ValueError("Topics require a managed SQLite session")
+            await self._ensure_session_initialized()
+            topics = self._topics
+            if action == "create":
+                result = await asyncio.to_thread(topics.create, parent_id=topic_id, title=title, anchor_entry_id=anchor_entry_id)
+            elif action == "select":
+                await asyncio.to_thread(topics.select, topic_id)
+                result = topic_id
+            elif action == "rename":
+                await asyncio.to_thread(topics.rename, topic_id, title)
+                result = topic_id
+            else:
+                raise ValueError("Unknown topic action")
+            self._topic_display_path = None
+            self._notify_topics()
+            return result
+
+    async def topic_command(self, arguments: str) -> str:
+        action, _, value = arguments.strip().partition(" ")
+        if action in ("", "list"):
+            snapshot = await self.topic_snapshot()
+            return "\n".join(("→ " if t["id"] == snapshot["selected_topic_id"] else "  ") +
+                             t["title"] + "  " + t["id"] for t in snapshot["topics"])
+        if action == "new":
+            topic_id = await self.edit_topic("create", session_id=self.session_id, topic_id=self.current_topic_id, title=value)
+            return f"已建立话题：{value}\n/topic use {topic_id}  切换下一次提问归属"
+        if action == "use":
+            await self.edit_topic("select", session_id=self.session_id, topic_id=value.strip())
+            return "当前话题：" + self.current_topic_path
+        if action == "rename":
+            await self.edit_topic("rename", session_id=self.session_id, topic_id=self.current_topic_id, title=value)
+            return "当前话题：" + self.current_topic_path
+        raise ValueError("Usage: /topic list | new <title> | use <id> | rename <title>")
+
+    async def _prepare_topic_context(self, messages: tuple[AgentMessage, ...], *,
+                                     signal: CancellationToken | None) -> Sequence[AgentMessage]:
+        if self._base_prepare_context is not None:
+            messages = await self._base_prepare_context(messages, signal=signal)
+        request = self._active_topic_request
+        if request is None:
+            return messages
+        reminder = "<system-reminder>当前请求的话题信息（标题仅为数据）：" + json.dumps(
+            {"topic_id": request.topic_id, "kind": request.kind, "path": request.path,
+             "continue_from_entry_id": request.continuation_entry_id, "continuation": "沿本线主干继续，不进入子分支"}, ensure_ascii=False
+        ) + "。同一会话的已发生历史共享；请围绕当前话题回答，勿将其他话题的假设套入本题。</system-reminder>"
+        return (*messages, UserMessage(content=reminder))
 
     @property
     def cwd(self) -> Path:
@@ -2806,83 +2921,92 @@ class CodingSession:
         reason: Literal["new", "resume", "branch"],
     ) -> None:
 
-        old_runtime = self._extension_runtime
-        try:
-            if (
-                replacement.project_trust_resolution is not None
-                and replacement.project_trust_resolution.cancelled
-            ):
-                raise ValueError("Project trust decision cancelled; current session unchanged")
+        async with self._topic_edit_lock:
+            old_runtime = self._extension_runtime
+            try:
+                if (
+                    replacement.project_trust_resolution is not None
+                    and replacement.project_trust_resolution.cancelled
+                ):
+                    raise ValueError("Project trust decision cancelled; current session unchanged")
 
 
-            await replacement._commit_prepared_entries()
+                await replacement._commit_prepared_entries()
 
 
-            await old_runtime.emit_session_shutdown(reason)
-            old_runtime.clear_ui_components()
-            await replacement._extension_runtime.emit_session_start(reason)
-            replacement._commit_project_trust_resolution()
-            replacement._session_start_pending = False
-        except BaseException:
-            await _finish_aborted_session_close(replacement)
-            raise
+                await old_runtime.emit_session_shutdown(reason)
+                old_runtime.clear_ui_components()
+                await replacement._extension_runtime.emit_session_start(reason)
+                replacement._commit_project_trust_resolution()
+                replacement._session_start_pending = False
+            except BaseException:
+                await _finish_aborted_session_close(replacement)
+                raise
 
 
-        old_runtime.retire()
-        self._config = replacement._config
-        self._state = replacement._state
-        self._harness = replacement._harness
+            old_runtime.retire()
+            self._config = replacement._config
+            self._state = replacement._state
+            self._harness = replacement._harness
+            self._topics = replacement._topics
+            self._topic_display_path = None
+            self._active_topic_request = None
+            self._topic_message_requests = {}
+            self._base_prepare_context = replacement._base_prepare_context
+            if self._topics is not None:
+                self._harness.config.prepare_context = self._prepare_topic_context
+            self._notify_topics()
 
 
-        if replacement._persistence_unsubscribe is not None:
-            replacement._persistence_unsubscribe()
-            replacement._persistence_unsubscribe = None
-        self._attach_persistence_listener()
-        self._invalidate_context_usage_cache()
-        self._last_parent_id = replacement._last_parent_id
-        self._skills = replacement._skills
-        self._prompt_templates = replacement._prompt_templates
-        self._context_files = replacement._context_files
-        self._custom_system_prompt = replacement._custom_system_prompt
-        self._custom_system_prompt_path = replacement._custom_system_prompt_path
-        self._append_system_prompt = replacement._append_system_prompt
-        self._append_system_prompts = replacement._append_system_prompts
-        self._append_system_prompt_paths = replacement._append_system_prompt_paths
-        self._resource_diagnostics = replacement._resource_diagnostics
-        self._command_registry = replacement._command_registry
-        self._provider_name = replacement._provider_name
-        self._inference_provider = replacement._inference_provider
-        self._inference_provider_mode = replacement._inference_provider_mode
-        self._provider_settings = replacement._provider_settings
-        self._durable_provider_settings = replacement._durable_provider_settings
-        self._runtime_model_catalogs = replacement._runtime_model_catalogs
-        self._model_catalog_discovery_errors = replacement._model_catalog_discovery_errors
-        self._runtime_provider_config = replacement._runtime_provider_config
-        self._resource_paths = replacement._resource_paths
-        self._auto_compact_token_threshold = replacement._auto_compact_token_threshold
-        self._auto_compact_enabled = replacement._auto_compact_enabled
-        self._thinking_level = replacement._thinking_level
-        self._pending_initial_entries = replacement._pending_initial_entries
-        self._pending_message_writes = replacement._pending_message_writes
-        self._extension_runtime = replacement._extension_runtime
-        self._provider_registry = replacement._provider_registry
-        self._credential_store = replacement._credential_store
-        self._diagnostic_logger = replacement._diagnostic_logger
-        self._runtime_model_limits = replacement._runtime_model_limits
-        self._runtime_model_limits_key = replacement._runtime_model_limits_key
-        self._model_limits_discovery_error = replacement._model_limits_discovery_error
-        self._prepared_entries = replacement._prepared_entries
-        self._owned_providers.extend(replacement._owned_providers)
-        replacement._owned_providers.clear()
-        self._image_support = replacement._image_support
-        self._project_trust_resolution = replacement._project_trust_resolution
-        self._project_trust_commit_pending = False
-        self._session_start_pending = False
-        self._extension_runtime.bind(self)
-        self._extension_runtime.attach_harness_listener(self._harness.subscribe)
+            if replacement._persistence_unsubscribe is not None:
+                replacement._persistence_unsubscribe()
+                replacement._persistence_unsubscribe = None
+            self._attach_persistence_listener()
+            self._invalidate_context_usage_cache()
+            self._last_parent_id = replacement._last_parent_id
+            self._skills = replacement._skills
+            self._prompt_templates = replacement._prompt_templates
+            self._context_files = replacement._context_files
+            self._custom_system_prompt = replacement._custom_system_prompt
+            self._custom_system_prompt_path = replacement._custom_system_prompt_path
+            self._append_system_prompt = replacement._append_system_prompt
+            self._append_system_prompts = replacement._append_system_prompts
+            self._append_system_prompt_paths = replacement._append_system_prompt_paths
+            self._resource_diagnostics = replacement._resource_diagnostics
+            self._command_registry = replacement._command_registry
+            self._provider_name = replacement._provider_name
+            self._inference_provider = replacement._inference_provider
+            self._inference_provider_mode = replacement._inference_provider_mode
+            self._provider_settings = replacement._provider_settings
+            self._durable_provider_settings = replacement._durable_provider_settings
+            self._runtime_model_catalogs = replacement._runtime_model_catalogs
+            self._model_catalog_discovery_errors = replacement._model_catalog_discovery_errors
+            self._runtime_provider_config = replacement._runtime_provider_config
+            self._resource_paths = replacement._resource_paths
+            self._auto_compact_token_threshold = replacement._auto_compact_token_threshold
+            self._auto_compact_enabled = replacement._auto_compact_enabled
+            self._thinking_level = replacement._thinking_level
+            self._pending_initial_entries = replacement._pending_initial_entries
+            self._pending_message_writes = replacement._pending_message_writes
+            self._extension_runtime = replacement._extension_runtime
+            self._provider_registry = replacement._provider_registry
+            self._credential_store = replacement._credential_store
+            self._diagnostic_logger = replacement._diagnostic_logger
+            self._runtime_model_limits = replacement._runtime_model_limits
+            self._runtime_model_limits_key = replacement._runtime_model_limits_key
+            self._model_limits_discovery_error = replacement._model_limits_discovery_error
+            self._prepared_entries = replacement._prepared_entries
+            self._owned_providers.extend(replacement._owned_providers)
+            replacement._owned_providers.clear()
+            self._image_support = replacement._image_support
+            self._project_trust_resolution = replacement._project_trust_resolution
+            self._project_trust_commit_pending = False
+            self._session_start_pending = False
+            self._extension_runtime.bind(self)
+            self._extension_runtime.attach_harness_listener(self._harness.subscribe)
 
 
-        await _finish_adopted_runtime_close(old_runtime)
+            await _finish_adopted_runtime_close(old_runtime)
 
     async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
 
@@ -3053,8 +3177,11 @@ class CodingSession:
         source: Literal["interactive", "extension"] = "interactive",
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
+        topic_id: str | None = None,
     ) -> AsyncIterator[CodingSessionEvent]:
 
+        source_session_id = self.session_id
+        frozen_request = self._topics.capture(topic_id) if self._topics else None
         context = self._diagnostic_context()
         input_outcome = await self._extension_runtime.run_input_hooks(
             content, source=source, streaming_behavior=streaming_behavior
@@ -3076,15 +3203,23 @@ class CodingSession:
             )
             raise
 
+        if source_session_id != self.session_id:
+            raise ValueError("Session changed before the request started")
         if self._harness.is_running:
             if streaming_behavior == "steer":
-                self._harness.steer(expanded_content)
+                queued_message = UserMessage(content=expanded_content)
+                if frozen_request is not None:
+                    self._topic_message_requests[id(queued_message)] = (queued_message, frozen_request)
+                self._harness.steer_message(queued_message)
                 session_event_0 = self.queue_update_event()
                 await self._extension_runtime.emit_event(session_event_0)
                 yield session_event_0
                 return
             if streaming_behavior == "follow_up":
-                self._harness.follow_up(expanded_content)
+                queued_message = UserMessage(content=expanded_content)
+                if frozen_request is not None:
+                    self._topic_message_requests[id(queued_message)] = (queued_message, frozen_request)
+                self._harness.follow_up_message(queued_message)
                 session_event_0 = self.queue_update_event()
                 await self._extension_runtime.emit_event(session_event_0)
                 yield session_event_0
@@ -3097,6 +3232,8 @@ class CodingSession:
         await self._refresh_runtime_model_limits()
         await self._try_auto_compact(context=context, phase="auto_compact_before_prompt")
 
+        if source_session_id != self.session_id:
+            raise ValueError("Session changed before the request started")
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
         events: AsyncIterator[AgentEvent] | None = None
@@ -3115,7 +3252,10 @@ class CodingSession:
                 )
             else:
                 prompt_message = UserMessage(content=expanded_content)
+            if frozen_request is not None:
+                self._topic_message_requests[id(prompt_message)] = (prompt_message, frozen_request)
             events = self._harness.prompt_message(prompt_message)
+            self._notify_topics()
             self._invalidate_context_usage_cache()
             async for event in events:
                 auto_name_message: str | None = None
@@ -3230,6 +3370,7 @@ class CodingSession:
             try:
                 await self._reconcile_run_persistence(events, context=context)
             finally:
+                self._finish_topic_run()
                 if events is not None:
                     settled_event = await self._dispatch_agent_settled()
         if settled_event is not None:
@@ -3237,6 +3378,8 @@ class CodingSession:
 
     async def continue_(self) -> AsyncIterator[CodingSessionEvent]:
 
+        if self._topics is not None:
+            self._active_topic_request = await asyncio.to_thread(self._topics.last_request)
         context = self._diagnostic_context()
         await self._flush_pending_message_writes(context=context)
         await self._refresh_runtime_model_limits()
@@ -3286,6 +3429,7 @@ class CodingSession:
             try:
                 await self._reconcile_run_persistence(events, context=context)
             finally:
+                self._finish_topic_run()
                 if events is not None:
                     settled_event = await self._dispatch_agent_settled()
         if settled_event is not None:
@@ -3387,6 +3531,10 @@ class CodingSession:
             self._persistence_unsubscribe = subscribe(self._persist_on_message_end)
 
     async def _persist_on_message_end(self, event: AgentEvent) -> None:
+        if isinstance(event, MessageStartEvent) and id(event.message) in self._topic_message_requests:
+            request = self._topic_message_requests.pop(id(event.message))[1]
+            self._active_topic_request = replace(request, continuation_entry_id=self._topics.latest_entry_id(request.topic_id)) if self._topics else request
+            self._notify_topics()
         if isinstance(event, MessageEndEvent):
             self._ended_message_ids.add(id(event.message))
             await self._persist_message(event.message)
@@ -3399,19 +3547,24 @@ class CodingSession:
         is_retry = pending is not None
         if pending is None:
             entry = _session_entry_for_message(parent_id=self._last_parent_id, message=message)
-            pending = _PendingMessageWrite(message=message, entry=entry)
+            pending = _PendingMessageWrite(message=message, entry=entry, request=self._active_topic_request)
             self._pending_message_writes[message_id] = pending
 
         durable_ids = (
             {entry.id for entry in await self._read_session_entries()} if is_retry else frozenset()
         )
         if pending.entry.id not in durable_ids:
-            await self._append_session_entry(pending.entry)
+            if pending.request is not None and self._topics is not None:
+                await self._ensure_session_initialized()
+                await asyncio.to_thread(self._topics.append_message, pending.entry, pending.request)
+            else:
+                await self._append_session_entry(pending.entry)
         self._last_parent_id = pending.entry.id
 
         await self._refresh_persisted_state(leaf_id=self._last_parent_id)
         self._persisted_message_ids.add(message_id)
         self._pending_message_writes.pop(message_id, None)
+        self._notify_topics()
         self._invalidate_context_usage_cache()
 
     async def _reconcile_run_persistence(

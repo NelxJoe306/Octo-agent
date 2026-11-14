@@ -8,7 +8,11 @@ export function ResizeDivider({
   max,
   onChange,
   onDragging,
+  label,
+  resetValue,
 }: {
+  label: string;
+  resetValue: number;
   side: "left" | "right";
   value: number;
   min: number;
@@ -30,7 +34,7 @@ export function ResizeDivider({
       className={`resize-divider resize-${side}`}
       role="separator"
       tabIndex={0}
-      aria-label={side === "left" ? "调整会话列表宽度" : "调整右侧窗口宽度"}
+      aria-label={label}
       aria-orientation="vertical"
       aria-valuemin={min}
       aria-valuemax={max}
@@ -73,7 +77,7 @@ export function ResizeDivider({
               : clamp(value + direction * (event.shiftKey ? 32 : 8)),
         );
       }}
-      onDoubleClick={() => onChange(clamp(side === "left" ? 248 : 276))}
+      onDoubleClick={() => onChange(clamp(resetValue))}
     />
   );
 }
