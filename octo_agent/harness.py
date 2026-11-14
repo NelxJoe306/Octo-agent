@@ -8,6 +8,7 @@ from inspect import isawaitable
 from typing import Literal
 
 from octo_agent.context_harness import CheckContext, PrepareContext
+from octo_agent.context_recovery import RecoverContext
 from octo_agent.events import AgentEvent, MessageEndEvent, MessageStartEvent
 from octo_agent.loop import AfterToolCall, BeforeToolCall, run_agent_loop
 from octo_agent.messages import (
@@ -47,6 +48,7 @@ class AgentHarnessConfig:
     after_tool_call: AfterToolCall | None = None
     prepare_context: PrepareContext | None = None
     check_context: CheckContext | None = None
+    recover_context: RecoverContext | None = None
 
 
 class SimpleCancellationToken:
@@ -189,6 +191,7 @@ class AgentHarness:
                 after_tool_call=self._config.after_tool_call,
                 prepare_context=self._config.prepare_context,
                 check_context=self._config.check_context,
+                recover_context=self._config.recover_context,
             ):
                 await self._notify(event)
                 yield event

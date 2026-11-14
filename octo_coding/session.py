@@ -10,14 +10,17 @@ from os import environ
 from pathlib import Path
 from typing import Literal
 
-from octo_agent.context_budget import ContextBudgetDecision, ContextBudgetPolicy, evaluate_context_budget
-from octo_agent.events import AgentEndEvent, AgentEvent, MessageStartEvent, MessageEndEvent, ToolExecutionEndEvent
+from octo_agent.context_budget import ContextBudgetDecision, ContextBudgetPolicy, ContextBudgetExceeded, evaluate_context_budget
+from octo_agent.context_recovery import ContextRecoveryResult, RecoveryReason, overflow_token_deficit, is_context_overflow_error
+from octo_coding.compaction import COMPACTION_STATE_NAMESPACE, TRIM_NOTICE, select_context_blocks
+from octo_agent.events import AgentStartEvent, AgentEndEvent, AgentEvent, MessageStartEvent, MessageEndEvent, ToolExecutionEndEvent
 from octo_agent.harness import AgentHarness, AgentHarnessConfig, QueuedMessages
 from octo_agent.messages import (
     AgentMessage,
     AssistantMessage,
     CustomMessage,
     Usage,
+    ToolResultMessage,
     UserMessage,
     message_text,
     sum_usage,
@@ -56,14 +59,11 @@ from octo_coding.codex_model_store import (
 from octo_coding.commands import CommandRegistry, CommandResult, create_default_command_registry
 from octo_coding.context import discover_project_context_with_diagnostics
 from octo_coding.context_window import (
-    DEFAULT_COMPACTION_KEEP_RECENT_TOKENS,
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     SUMMARIZATION_SYSTEM_PROMPT,
     ContextUsageEstimate,
-    auto_compaction_threshold_for_context_window,
     build_compaction_summary_prompt,
     estimate_context_usage,
-    estimate_message_tokens,
     summarize_messages_for_compaction,
 )
 from octo_coding.credentials import FileCredentialStore, credentials_path
@@ -77,8 +77,6 @@ from octo_coding.events import (
     AutoRetryEndEvent,
     AutoRetryStartEvent,
     CodingSessionEvent,
-    CompactionEndEvent,
-    CompactionStartEvent,
     QueueUpdateEvent,
     SessionAgentEndEvent,
     SessionInfoChangedEvent,
@@ -295,15 +293,6 @@ class SessionResources:
 
 
 @dataclass(frozen=True, slots=True)
-class CompactionPlan:
-
-
-    first_kept_entry_id: str
-    replaced_entry_count: int
-    messages_to_summarize: tuple[AgentMessage, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class _GeneratedSummary:
 
 
@@ -478,8 +467,11 @@ class CodingSession:
         self._last_context_budget_error: str | None = None
         self._harness.config.check_context = self._check_context_budget
         self._base_prepare_context = self._harness.config.prepare_context
-        if self._topics is not None:
-            self._harness.config.prepare_context = self._prepare_topic_context
+        self._context_summary_failures = next((int(entry.data.get("failures", 0))
+            for entry in reversed(state.custom_entries) if entry.namespace == COMPACTION_STATE_NAMESPACE), 0)
+        self._context_overflow_attempted = False
+        self._harness.config.prepare_context = self._prepare_session_context
+        self._harness.config.recover_context = self._recover_context if self._auto_compact_enabled else None
         self._attach_persistence_listener()
 
     @classmethod
@@ -879,6 +871,25 @@ class CodingSession:
             return "当前话题：" + self.current_topic_path
         raise ValueError("Usage: /topic list | new <title> | use <id> | rename <title>")
 
+    def _context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
+        rows = tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))
+        failed_calls = {call.id for _, message in rows
+                        if isinstance(message, AssistantMessage) and message.stop_reason in {"error", "aborted"}
+                        for call in message.tool_calls}
+        return tuple((entry_id, message) for entry_id, message in rows
+                     if not (isinstance(message, AssistantMessage) and message.stop_reason in {"error", "aborted"})
+                     and not (isinstance(message, ToolResultMessage) and message.tool_call_id in failed_calls))
+
+    def _protected_round_ids(self, rows: Sequence[tuple[str, AgentMessage]]) -> set[str]:
+        user_ids = {entry.id for entry in self._state.entries if isinstance(entry, CustomMessageEntry) or
+                    isinstance(entry, MessageEntry) and isinstance(entry.message, UserMessage)}
+        first = next((index for index in range(len(rows) - 1, -1, -1) if rows[index][0] in user_ids), len(rows))
+        return {entry_id for entry_id, _ in rows[first:]}
+
+    async def _prepare_session_context(self, messages: tuple[AgentMessage, ...], *,
+                                       signal: CancellationToken | None) -> Sequence[AgentMessage]:
+        return await self._prepare_topic_context(tuple(message for _, message in self._context_rows()), signal=signal)
+
     async def _prepare_topic_context(self, messages: tuple[AgentMessage, ...], *,
                                      signal: CancellationToken | None) -> Sequence[AgentMessage]:
         if self._base_prepare_context is not None:
@@ -891,6 +902,10 @@ class CodingSession:
              "continue_from_entry_id": request.continuation_entry_id, "continuation": "沿本线主干继续，不进入子分支"}, ensure_ascii=False
         ) + "。同一会话的已发生历史共享；请围绕当前话题回答，勿将其他话题的假设套入本题。</system-reminder>"
         return (*messages, UserMessage(content=reminder))
+
+    @property
+    def context_summary_failures(self) -> int:
+        return self._context_summary_failures
 
     @property
     def last_context_budget(self) -> ContextBudgetDecision | None:
@@ -945,7 +960,9 @@ class CodingSession:
                 ContextBudgetPolicy(
                     context_window=window, output_reserve=output,
                     safety_margin=self._config.context_safety_margin,
-                    soft_ratio=self._config.context_soft_ratio,
+                    soft_ratio=(min(1.0, self._auto_compact_token_threshold / window)
+                                if self._auto_compact_token_threshold is not None and self._auto_compact_token_threshold > 0
+                                else self._config.context_soft_ratio),
                     image_reserve=self._config.context_image_reserve, output_source=output_source,
                 ),
                 system=system + additional_system, messages=messages, tools=tools,
@@ -1350,7 +1367,7 @@ class CodingSession:
         if self._context_usage_cache is None:
             self._context_usage_cache = estimate_context_usage(
                 system=self._harness.config.system,
-                messages=self._harness.messages,
+                messages=tuple(message for _, message in self._context_rows()),
                 tools=tuple(self._harness.config.tools),
             )
         return self._context_usage_cache
@@ -1418,17 +1435,16 @@ class CodingSession:
 
         if not self._auto_compact_enabled:
             return None
+        if self._last_context_budget is not None:
+            return self._last_context_budget.soft_input_limit
         if self._auto_compact_token_threshold is not None:
             return self._auto_compact_token_threshold
-        if self._runtime_model_limits_key == (self.provider_name, self.model):
-            limits = self._runtime_model_limits
-            if limits is not None:
-                return limits.effective_auto_compact_token_limit
-        return auto_compaction_threshold_for_context_window(self.context_window_tokens)
+        return max(1, int(self.context_window_tokens * self._config.context_soft_ratio))
 
     def set_auto_compaction_enabled(self, enabled: bool) -> None:
 
         self._auto_compact_enabled = enabled
+        self._harness.config.recover_context = self._recover_context if enabled else None
         self._config = replace(self._config, auto_compact_enabled=enabled)
 
     @property
@@ -2219,9 +2235,17 @@ class CodingSession:
 
     def will_auto_retry(self, message: AssistantMessage) -> bool:
 
-        return is_context_overflow_error(message) or self._should_auto_failover_huggingface_route(
-            message
-        )
+        if self._should_auto_failover_huggingface_route(message):
+            return True
+        if not (
+            self._harness.is_running and self._harness.config.recover_context is not None
+            and not self._context_overflow_attempted and not message.tool_calls
+            and message.stop_reason == "error" and is_context_overflow_error(message)
+        ):
+            return False
+        rows = self._context_rows()
+        protected = self._protected_round_ids(rows)
+        return any(entry_id not in protected for entry_id, _ in rows)
 
     def _should_auto_failover_huggingface_route(
         self,
@@ -3031,8 +3055,10 @@ class CodingSession:
             self._last_context_budget_error = None
             self._harness.config.check_context = self._check_context_budget
             self._base_prepare_context = replacement._base_prepare_context
-            if self._topics is not None:
-                self._harness.config.prepare_context = self._prepare_topic_context
+            self._harness.config.prepare_context = self._prepare_session_context
+            self._harness.config.recover_context = self._recover_context if replacement._auto_compact_enabled else None
+            self._context_summary_failures = replacement._context_summary_failures
+            self._context_overflow_attempted = False
             self._notify_topics()
 
 
@@ -3087,32 +3113,29 @@ class CodingSession:
             await _finish_adopted_runtime_close(old_runtime)
 
     async def compact_detailed(self, instructions: str | None = None) -> ManualCompactionResult:
-
+        self._require_idle("compact")
         await self._flush_pending_message_writes(context=self._diagnostic_context())
-        plan = self._recent_preserving_compaction_plan()
-        if plan is None:
-            raise ValueError("Not enough context to compact while preserving recent entries")
-        tokens_before = self.context_token_estimate
+        rows = self._context_rows()
+        protected = self._protected_round_ids(rows)
+        prepared = await self._prepare_session_context((), signal=None)
+        budget = await self._check_context_budget(model=self.model, system=self.system_prompt, messages=prepared, tools=self.tools)
+        selected = select_context_blocks(rows, remove_tokens=budget.estimated_input - min(20000, max(0, budget.hard_input_limit // 2)),
+            protected_ids=protected, image_reserve=self._config.context_image_reserve)
+        if not selected:
+            raise ValueError("Not enough complete context blocks to compact while preserving the latest request")
+        replaced_ids = [entry_id for block in selected for entry_id in block.entry_ids]
+        first_kept = next(entry_id for entry_id, _ in rows if entry_id not in set(replaced_ids))
+        expected_head = self._last_parent_id
         generated = await self._generate_compaction_summary(
-            plan.messages_to_summarize,
-            custom_instructions=instructions,
+            tuple(message for block in selected for message in block.messages), custom_instructions=instructions,
+            source_entry_ids=replaced_ids,
         )
-        await self._append_compaction(
-            generated.text,
-            first_kept_entry_id=plan.first_kept_entry_id,
-            tokens_before=tokens_before,
-            usage=generated.usage,
-            provider=generated.provider,
-            model=generated.model,
-            response_provider=generated.response_provider,
-        )
-        return ManualCompactionResult(
-            summary=generated.text,
-            first_kept_entry_id=plan.first_kept_entry_id,
-            tokens_before=tokens_before,
-            estimated_tokens_after=self.context_token_estimate,
-            replaced_entry_count=plan.replaced_entry_count,
-        )
+        await self._record_context_change(generated.text, replaced_ids, failures=self._context_summary_failures,
+            expected_head=expected_head, tokens_before=budget.estimated_input, generated=generated)
+        self._harness.replace_messages(self._state.messages)
+        return ManualCompactionResult(summary=generated.text, first_kept_entry_id=first_kept,
+            tokens_before=budget.estimated_input, estimated_tokens_after=self.context_token_estimate,
+            replaced_entry_count=len(replaced_ids))
 
     async def compact(self, instructions: str | None = None) -> str:
 
@@ -3308,7 +3331,6 @@ class CodingSession:
 
         await self._flush_pending_message_writes(context=context)
         await self._refresh_runtime_model_limits()
-        await self._try_auto_compact(context=context, phase="auto_compact_before_prompt")
 
         if source_session_id != self.session_id:
             raise ValueError("Session changed before the request started")
@@ -3317,7 +3339,6 @@ class CodingSession:
         events: AsyncIterator[AgentEvent] | None = None
         settled_event: AgentSettledEvent | None = None
         auto_name_attempted = False
-        overflow_message: AssistantMessage | None = None
         route_failure_message: AssistantMessage | None = None
         try:
             prompt_message: AgentMessage
@@ -3356,16 +3377,12 @@ class CodingSession:
                         phase="agent_loop",
                         message=event.message,
                     )
-                    if is_context_overflow_error(event.message):
-                        overflow_message = event.message
-                    elif self._should_auto_failover_huggingface_route(event.message):
+                    if self._should_auto_failover_huggingface_route(event.message):
                         route_failure_message = event.message
                 if isinstance(event, AgentEndEvent):
                     yield SessionAgentEndEvent(
                         messages=event.messages,
-                        will_retry=(
-                            overflow_message is not None or route_failure_message is not None
-                        ),
+                        will_retry=route_failure_message is not None,
                     )
                 else:
                     yield event
@@ -3373,70 +3390,9 @@ class CodingSession:
 
                 if auto_name_message is not None:
                     await self._try_auto_name_session(auto_name_message, context=context)
-            if overflow_message is not None:
-                session_event_1 = CompactionStartEvent(reason="overflow")
-                await self._extension_runtime.emit_event(session_event_1)
-                yield session_event_1
-                compacted = await self._try_overflow_compact(context=context)
-                compaction_end = CompactionEndEvent(
-                    reason="overflow",
-                    result=None,
-                    aborted=not compacted,
-                    will_retry=compacted,
-                    error_message=None if compacted else "Overflow compaction failed",
-                )
-                await self._extension_runtime.emit_event(compaction_end)
-                yield compaction_end
-                if compacted:
-                    retry_start = AutoRetryStartEvent(
-                        attempt=1,
-                        max_attempts=1,
-                        delay_ms=0,
-                        error_message=overflow_message.error_message or "Context overflow",
-                    )
-                    await self._extension_runtime.emit_event(retry_start)
-                    yield retry_start
-                    events = self._harness.continue_()
-                    self._invalidate_context_usage_cache()
-                    overflow_retry_error: str | None = None
-                    async for retry_event in events:
-                        if isinstance(retry_event, ToolExecutionEndEvent):
-                            self._invalidate_context_usage_cache()
-                        if (
-                            isinstance(retry_event, MessageEndEvent)
-                            and isinstance(retry_event.message, AssistantMessage)
-                            and retry_event.message.stop_reason in {"error", "aborted"}
-                        ):
-                            overflow_retry_error = (
-                                retry_event.message.error_message or "Provider request aborted"
-                            )
-                            if retry_event.message.stop_reason == "error":
-                                self._last_diagnostic_log_path = (
-                                    self._diagnostic_logger.log_assistant_error(
-                                        context=context,
-                                        phase="agent_loop_retry",
-                                        message=retry_event.message,
-                                    )
-                                )
-                        if isinstance(retry_event, AgentEndEvent):
-                            yield SessionAgentEndEvent(
-                                messages=retry_event.messages,
-                                will_retry=False,
-                            )
-                        else:
-                            yield retry_event
-                    session_event_4 = AutoRetryEndEvent(
-                        success=overflow_retry_error is None,
-                        attempt=1,
-                        final_error=overflow_retry_error,
-                    )
-                    await self._extension_runtime.emit_event(session_event_4)
-                    yield session_event_4
-            elif route_failure_message is not None:
+            if route_failure_message is not None:
                 async for failover_event in self._run_huggingface_route_failover(context=context):
                     yield failover_event
-            else:
-                await self._try_auto_compact(context=context, phase="auto_compact_after_prompt")
         except Exception as exc:
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
@@ -3495,7 +3451,6 @@ class CodingSession:
             if route_failure_message is not None:
                 async for failover_event in self._run_huggingface_route_failover(context=context):
                     yield failover_event
-            await self._try_auto_compact(context=context, phase="auto_compact_after_continue")
         except Exception as exc:
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
                 context=context,
@@ -3609,6 +3564,8 @@ class CodingSession:
             self._persistence_unsubscribe = subscribe(self._persist_on_message_end)
 
     async def _persist_on_message_end(self, event: AgentEvent) -> None:
+        if isinstance(event, AgentStartEvent):
+            self._context_overflow_attempted = False
         if isinstance(event, MessageStartEvent) and id(event.message) in self._topic_message_requests:
             request = self._topic_message_requests.pop(id(event.message))[1]
             self._active_topic_request = replace(request, continuation_entry_id=self._topics.latest_entry_id(request.topic_id)) if self._topics else request
@@ -3670,6 +3627,8 @@ class CodingSession:
                     self._log_persistence_failure(context=context, exc=exc)
         self._ended_message_ids.clear()
         self._persisted_message_ids.clear()
+        if not self._pending_message_writes:
+            self._harness.replace_messages(self._state.messages)
 
     async def _flush_pending_message_writes(self, *, context: AgentCallDiagnosticContext) -> None:
 
@@ -3825,50 +3784,138 @@ class CodingSession:
             session_id=self._config.session_id,
         )
 
-    async def _try_auto_compact(
-        self,
-        *,
-        context: AgentCallDiagnosticContext,
-        phase: str,
-    ) -> bool:
-        try:
-            return await self._maybe_auto_compact()
-        except Exception as exc:
-            self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
-                context=context,
-                phase=phase,
-                exc=exc,
-            )
-            return False
+    async def _commit_context_records(self, records: tuple[SessionEntry, ...], *, expected_head: str | None) -> None:
+        async def commit_and_refresh() -> None:
+            await self._ensure_session_initialized()
+            if self._last_parent_id != expected_head:
+                raise ValueError("Session head changed during context compaction")
+            append_if_head = getattr(self._config.storage, "append_batch_if_head", None)
+            if append_if_head is not None:
+                await append_if_head(records, expected_head=expected_head)
+            else:
+                existing = await self._read_session_entries()
+                if (existing[-1].id if existing else None) != expected_head:
+                    raise ValueError("Session head changed during context compaction")
+                await self._append_session_batch(records)
+            self._last_parent_id = records[-1].id
+            await self._refresh_persisted_state(leaf_id=self._last_parent_id)
+            receipt = records[-1]
+            if isinstance(receipt, CustomEntry) and receipt.namespace == COMPACTION_STATE_NAMESPACE:
+                self._context_summary_failures = int(receipt.data["failures"])
+            self._invalidate_context_usage_cache()
+        # 提交开始后，取消也要等事务和内存视图同步，避免继续使用旧 head。
+        commit_task = asyncio.create_task(commit_and_refresh())
+        cancelled = False
+        while not commit_task.done():
+            try:
+                await asyncio.shield(commit_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        commit_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
-    async def _try_overflow_compact(
-        self,
-        *,
-        context: AgentCallDiagnosticContext,
-    ) -> bool:
+    async def _record_context_change(
+        self, summary: str | None, replaced_ids: list[str], *, failures: int,
+        expected_head: str | None, tokens_before: int, generated: _GeneratedSummary | None = None,
+    ) -> None:
+        records: list[SessionEntry] = []
+        parent = expected_head
+        if summary is not None:
+            compaction = CompactionEntry(parent_id=parent, summary=summary,
+                replaces_entry_ids=replaced_ids, tokens_before=tokens_before,
+                usage=generated.usage if generated else None, provider=generated.provider if generated else None,
+                model=generated.model if generated else None, response_provider=generated.response_provider if generated else None)
+            records.append(compaction)
+            parent = compaction.id
+        records.append(CustomEntry(parent_id=parent, namespace=COMPACTION_STATE_NAMESPACE,
+            data={"failures": failures, "summary_disabled": failures >= 3}))
+        await self._commit_context_records(tuple(records), expected_head=expected_head)
+        self._context_summary_failures = failures
+
+    async def _recover_context(
+        self, *, reason: RecoveryReason, decision: ContextBudgetDecision,
+        error_message: str | None = None, signal: CancellationToken | None = None,
+    ) -> ContextRecoveryResult:
+        if reason == "overflow":
+            self._context_overflow_attempted = True
+        if signal is not None and signal.is_cancelled():
+            raise asyncio.CancelledError
+        rows = self._context_rows()
+        protected = self._protected_round_ids(rows)
+        required = await self._prepare_topic_context(tuple(message for entry_id, message in rows if entry_id in protected), signal=signal)
         try:
-            plan = self._recent_preserving_compaction_plan()
-            if plan is None:
-                return False
-            tokens_before = self.context_token_estimate
-            generated = await self._generate_compaction_summary(plan.messages_to_summarize)
-            await self._append_compaction(
-                generated.text,
-                first_kept_entry_id=plan.first_kept_entry_id,
-                tokens_before=tokens_before,
-                usage=generated.usage,
-                provider=generated.provider,
-                model=generated.model,
-                response_provider=generated.response_provider,
-            )
-            return True
-        except Exception as exc:
-            self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
-                context=context,
-                phase="overflow_compact",
-                exc=exc,
-            )
-            return False
+            required_budget = await self._check_context_budget(model=self.model, system=self.system_prompt,
+                messages=required, tools=self.tools)
+        finally:
+            self._last_context_budget = decision
+        # 当前完整轮次与固定前置已超窗时，压缩旧历史也无法腾出足够空间。
+        if required_budget.status == "BLOCK":
+            return ContextRecoveryResult(False, detail="Current round and fixed context exceed capacity; protected messages were not changed")
+        target = max(0, min(decision.soft_input_limit, decision.hard_input_limit) * 3 // 4)
+        if reason == "overflow":
+            deficit = overflow_token_deficit(error_message or "")
+            reduction = (deficit if deficit is not None else max(128, decision.estimated_input // 5)) + decision.safety_margin
+            target = max(0, min(decision.hard_input_limit, decision.estimated_input - reduction))
+        selected = select_context_blocks(rows, remove_tokens=decision.estimated_input - target,
+            protected_ids=protected, image_reserve=self._config.context_image_reserve)
+        if not selected:
+            return ContextRecoveryResult(False, detail="No complete unprotected context blocks can be removed")
+        replaced_ids = [entry_id for block in selected for entry_id in block.entry_ids]
+        expected_head = self._last_parent_id
+        failure = None
+        if reason != "overflow" and self._context_summary_failures < 3:
+            try:
+                generated = await self._generate_compaction_summary(
+                    tuple(message for block in selected for message in block.messages), signal=signal,
+                    source_entry_ids=replaced_ids,
+                )
+                candidate = []
+                inserted = False
+                removed_ids = set(replaced_ids)
+                for entry_id, message in rows:
+                    if entry_id not in removed_ids:
+                        candidate.append(message)
+                    elif not inserted:
+                        candidate.append(UserMessage(content="Previous conversation summary:\n" + generated.text))
+                        inserted = True
+                projected = await self._prepare_topic_context(tuple(candidate), signal=signal)
+                candidate_budget = await self._check_context_budget(model=self.model, system=self.system_prompt,
+                    messages=projected, tools=self.tools)
+                if candidate_budget.estimated_input >= decision.estimated_input:
+                    raise RuntimeError("Compaction summary did not reduce the prepared input")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                failure = str(exc)
+                await self._record_context_change(None, [], failures=self._context_summary_failures + 1,
+                    expected_head=expected_head, tokens_before=decision.estimated_input)
+                expected_head = self._last_parent_id
+            else:
+                if signal is not None and signal.is_cancelled():
+                    raise asyncio.CancelledError
+                await self._record_context_change(generated.text, replaced_ids, failures=0,
+                    expected_head=expected_head, tokens_before=decision.estimated_input, generated=generated)
+                prepared = await self._prepare_session_context((), signal=signal)
+                after = await self._check_context_budget(model=self.model, system=self.system_prompt,
+                    messages=prepared, tools=self.tools)
+                if after.status != "BLOCK":
+                    return ContextRecoveryResult(True, "summary", f"Summarized {len(replaced_ids)} entries")
+                rows = self._context_rows()
+                selected = select_context_blocks(rows, remove_tokens=after.estimated_input - target,
+                    protected_ids=protected, image_reserve=self._config.context_image_reserve)
+                replaced_ids = [entry_id for block in selected for entry_id in block.entry_ids]
+                expected_head = self._last_parent_id
+        if reason == "soft" and self._context_summary_failures < 3:
+            return ContextRecoveryResult(False, detail=failure)
+        if not replaced_ids:
+            return ContextRecoveryResult(True, "summary", "No further complete blocks can be removed")
+        if signal is not None and signal.is_cancelled():
+            raise asyncio.CancelledError
+        await self._record_context_change(TRIM_NOTICE, replaced_ids, failures=self._context_summary_failures,
+            expected_head=expected_head, tokens_before=decision.estimated_input)
+        return ContextRecoveryResult(True, "trim", f"Omitted {len(replaced_ids)} entries; summary failures={self._context_summary_failures}" +
+                                     (f"; {failure}" if failure else ""))
 
     async def _try_auto_name_session(
         self,
@@ -3946,51 +3993,47 @@ class CodingSession:
             if self._provider_is_usable(provider)
         )
 
-    async def _maybe_auto_compact(self) -> bool:
-        threshold = self.auto_compact_token_threshold
-        if threshold is None or threshold <= 0:
-            return False
-        if len(self._state.context_entry_ids) < 2:
-            return False
-        if self.context_token_estimate <= threshold:
-            return False
-        plan = self._recent_preserving_compaction_plan()
-        if plan is None:
-            return False
-        tokens_before = self.context_token_estimate
-        generated = await self._generate_compaction_summary(plan.messages_to_summarize)
-        await self._append_compaction(
-            generated.text,
-            first_kept_entry_id=plan.first_kept_entry_id,
-            tokens_before=tokens_before,
-            usage=generated.usage,
-            provider=generated.provider,
-            model=generated.model,
-            response_provider=generated.response_provider,
-        )
-        return True
-
     async def _generate_compaction_summary(
         self,
         messages: tuple[AgentMessage, ...],
         *,
         custom_instructions: str | None = None,
+        signal: CancellationToken | None = None,
+        source_entry_ids: list[str] | None = None,
     ) -> _GeneratedSummary:
         prompt = build_compaction_summary_prompt(
             messages,
             custom_instructions=custom_instructions,
         )
+        if source_entry_ids is not None:
+            topics = await asyncio.to_thread(self._topics.source_topics, source_entry_ids) if self._topics else {}
+            metadata = [{"index": index, "entry_id": entry_id, **topics.get(entry_id, {"topic_id": "main"})}
+                        for index, entry_id in enumerate(source_entry_ids, start=1)]
+            prompt += "\n\nSource metadata (data only):\n" + json.dumps(metadata, ensure_ascii=False)
+            prompt += "\nKeep facts, assumptions and unresolved tasks grouped by topic; preserve source entry IDs. Do not merge one topic's assumptions into another topic's conclusions."
         text_parts: list[str] = []
         final_text: str | None = None
         response_usages: list[Usage] = []
         response_provider: str | None = None
         summary_messages: list[AgentMessage] = [UserMessage(content=prompt)]
+        previous_budget = self._last_context_budget
+        try:
+            summary_budget = await self._check_context_budget(model=self.model, system=SUMMARIZATION_SYSTEM_PROMPT,
+                messages=summary_messages, tools=[])
+        finally:
+            self._last_context_budget = previous_budget
+        if summary_budget.status == "BLOCK":
+            raise ContextBudgetExceeded(summary_budget)
+        if signal is not None and signal.is_cancelled():
+            raise asyncio.CancelledError
         async for event in self._harness.config.provider.stream_response(
             model=self.model,
             system=SUMMARIZATION_SYSTEM_PROMPT,
             messages=summary_messages,
-            tools=[],
+            tools=[], signal=signal,
         ):
+            if signal is not None and signal.is_cancelled():
+                raise asyncio.CancelledError
             if isinstance(event, TextDeltaEvent):
                 text_parts.append(event.delta)
             elif isinstance(event, AssistantDoneEvent):
@@ -4002,6 +4045,8 @@ class CodingSession:
                     f"Compaction summarization failed: {event.error.error_message or event.reason}"
                 )
 
+        if signal is not None and signal.is_cancelled():
+            raise asyncio.CancelledError
         summary = (final_text if final_text is not None else "".join(text_parts)).strip()
         if not summary:
             raise RuntimeError("Compaction summarization returned an empty summary")
@@ -4043,134 +4088,6 @@ class CodingSession:
             text=summarize_messages_for_compaction(messages),
             usage=None,
         )
-
-    def _recent_preserving_compaction_plan(self) -> CompactionPlan | None:
-        rows = self._active_context_rows()
-        if len(rows) < 2:
-            return None
-
-        first_kept_index = _first_recent_context_index(
-            rows,
-            keep_recent_tokens=DEFAULT_COMPACTION_KEEP_RECENT_TOKENS,
-        )
-        if first_kept_index <= 0:
-            return None
-
-        if first_kept_index >= len(rows):
-            return None
-
-        replaced = rows[:first_kept_index]
-        return CompactionPlan(
-            first_kept_entry_id=rows[first_kept_index][0],
-            replaced_entry_count=len(replaced),
-            messages_to_summarize=tuple(message for _entry_id, message in replaced),
-        )
-
-    def _active_context_rows(self) -> tuple[tuple[str, AgentMessage], ...]:
-        return tuple(zip(self._state.context_entry_ids, self._state.messages, strict=True))
-
-    # 压缩条目落盘后重建上下文，再同步到内存中的 Agent。
-    async def _append_compaction(
-        self,
-        summary: str,
-        *,
-        first_kept_entry_id: str,
-        tokens_before: int | None = None,
-        usage: Usage | None = None,
-        provider: str | None = None,
-        model: str | None = None,
-        response_provider: str | None = None,
-    ) -> CompactionEntry:
-        if first_kept_entry_id not in self._state.context_entry_ids:
-            raise ValueError("First kept entry is not in the active context")
-
-        compaction = CompactionEntry(
-            parent_id=self._last_parent_id,
-            summary=summary,
-            first_kept_entry_id=first_kept_entry_id,
-            tokens_before=tokens_before,
-            usage=usage,
-            provider=provider,
-            model=model,
-            response_provider=response_provider,
-        )
-        await self._append_session_entry(compaction)
-        self._last_parent_id = compaction.id
-
-        await self._refresh_persisted_state(leaf_id=compaction.id)
-        self._harness.replace_messages(self._state.messages)
-        self._invalidate_context_usage_cache()
-        return compaction
-
-
-def _first_recent_context_index(
-    rows: tuple[tuple[str, AgentMessage], ...],
-    *,
-    keep_recent_tokens: int,
-) -> int:
-    if keep_recent_tokens <= 0:
-        return len(rows)
-
-    accumulated_tokens = 0
-    candidate_index: int | None = None
-    for index in range(len(rows) - 1, -1, -1):
-        _entry_id, message = rows[index]
-        accumulated_tokens += estimate_message_tokens(message)
-        if accumulated_tokens >= keep_recent_tokens:
-            candidate_index = index
-            break
-
-    if candidate_index is None:
-        return 0
-
-    candidate_message = rows[candidate_index][1]
-    if candidate_message.role == "user":
-        if candidate_index > 0:
-            return candidate_index
-        next_user_index = _next_user_message_index(rows, start=1)
-        return next_user_index if next_user_index is not None else 0
-
-    next_user_index = _next_user_message_index(rows, start=candidate_index + 1)
-    if next_user_index is not None:
-        return next_user_index
-
-    for index in range(candidate_index, len(rows)):
-        if rows[index][1].role != "toolResult":
-            return index
-    return len(rows)
-
-
-def _next_user_message_index(
-    rows: tuple[tuple[str, AgentMessage], ...],
-    *,
-    start: int,
-) -> int | None:
-    for index in range(start, len(rows)):
-        if rows[index][1].role == "user":
-            return index
-    return None
-
-
-def is_context_overflow_error(message: AssistantMessage) -> bool:
-
-    text = message.error_message or ""
-    normalized = text.lower()
-    markers = (
-        "context length",
-        "context window",
-        "context limit",
-        "maximum context",
-        "max context",
-        "input is too long",
-        "input length",
-        "prompt is too long",
-        "too many tokens",
-        "token limit",
-        "exceeds the limit",
-        "exceeded the limit",
-    )
-    return any(marker in normalized for marker in markers)
-
 
 def is_retryable_huggingface_route_error(message: AssistantMessage) -> bool:
 

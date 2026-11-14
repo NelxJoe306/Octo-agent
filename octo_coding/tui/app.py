@@ -44,6 +44,8 @@ from textual.worker import Worker
 
 from octo_agent.events import (
     ContextBudgetEvent,
+    ContextRecoveryStartEvent,
+    ContextRecoveryEndEvent,
     AgentEndEvent,
     AgentStartEvent,
     MessageEndEvent,
@@ -5412,6 +5414,13 @@ class OctoTuiApp(App[None]):
             transcript = self.query_one("#transcript", TranscriptView)
         except NoMatches:
             self._refresh()
+            return
+        if isinstance(event, (ContextRecoveryStartEvent, ContextRecoveryEndEvent)):
+            await transcript.finish_assistant_message()
+            if self.state.items:
+                await transcript.append_item(self.state.items[-1], theme=theme,
+                    show_tool_results=self.state.show_tool_results)
+            self._refresh_chrome()
             return
         if isinstance(event, ContextBudgetEvent):
             if event.decision.status == "NEEDS_COMPACTION":

@@ -1,4 +1,6 @@
 from octo_agent.events import (
+    ContextRecoveryStartEvent,
+    ContextRecoveryEndEvent,
     AgentEndEvent,
     AgentStartEvent,
     MessageEndEvent,
@@ -134,6 +136,19 @@ class TuiEventAdapter:
                 event.result,
                 event.is_error,
             )
+            return
+        if isinstance(event, ContextRecoveryStartEvent):
+            text = "… 上下文超窗，裁剪完整旧块后重试" if event.reason == "overflow" else "… 正在整理上下文"
+            self.state.add_item("status", text)
+            return
+        if isinstance(event, ContextRecoveryEndEvent):
+            if event.result.changed:
+                self._pending_overflow_error = None
+                self.state.error = None
+            elif event.reason == "overflow" and self._pending_overflow_error is not None:
+                self.state.add_assistant_error(self._pending_overflow_error)
+                self._pending_overflow_error = None
+            self.state.add_item("status", event.result.detail or "上下文保持不变")
             return
         if isinstance(event, CompactionStartEvent) and event.reason == "overflow":
             self.state.add_item("status", "… Context limit reached; compacting and retrying")
