@@ -66,9 +66,10 @@ SQLite 会话中的大段文本工具结果会保存为持久产物，模型收�
 
 ```powershell
 python tools\verify.py
+python -m unittest discover -s tools -p 'test_*.py' -q
 ```
 
-验证使用临时目录与本地假模型，不需要 API Key，也不访问真实用户会话。
+验证使用临时目录与本地假模型，不需要真实 API Key，也不访问真实用户会话。原有会话测试和基础检查的夹具显式关闭后台记忆，CLI 测试使用临时本机设置关闭；记忆功能测试则显式启用，包含本地模拟中转站验收。以上命令不需要预先设置 OCTO_DISABLE_MEMORY。
 
 ## 许可证
 

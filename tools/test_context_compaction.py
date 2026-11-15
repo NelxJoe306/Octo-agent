@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.events import MessageEndEvent
 from octo_agent.context_budget import ContextBudgetExceeded
 from octo_agent.context_recovery import overflow_token_deficit
@@ -64,7 +66,7 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
         if storage_wrapper:
             storage = storage_wrapper(storage)
         provider = FakeProvider(streams)
-        config = CodingSessionConfig(provider=provider, model='offline', storage=storage,
+        config = CodingSessionConfig(memory_settings=MemorySettings(enabled=False), provider=provider, model='offline', storage=storage,
             session_id=record.id, session_manager=manager, cwd=self.base, system='system', tools=list(tools),
             resource_paths=OctoResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=self.base, paths=paths),
             auto_compact_enabled=True, context_soft_ratio=ratio, context_output_reserve_tokens=512,

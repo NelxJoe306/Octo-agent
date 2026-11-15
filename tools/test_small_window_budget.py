@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import httpx
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.context_budget import ContextBudgetExceeded
 from octo_ai.anthropic import AnthropicProvider
 from octo_ai.env import AnthropicConfig, OpenAICompatibleConfig
@@ -49,6 +51,7 @@ class SmallWindowBudgetTests(unittest.IsolatedAsyncioTestCase):
         manager = SessionManager(paths)
         record = manager.create_session(cwd=self.base, model='gpt-4', title='Small window fixture')
         session = await CodingSession.load(CodingSessionConfig(
+            memory_settings=MemorySettings(enabled=False),
             provider=provider, model='gpt-4', provider_name='openai', owns_initial_provider=True,
             provider_settings=ProviderSettings(providers=(provider_config,)), runtime_provider_config=provider_config,
             storage=manager.storage_for(record), session_id=record.id, session_manager=manager,
