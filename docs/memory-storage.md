@@ -4,7 +4,7 @@
 
 ## 公开接口
 
-实现位于 `octo_agent/memory/`，入口为 `MemoryStore(SQLiteSessionDatabase(path))`。所有数据库操作在线程中执行。
+实现位于 `src/long_term_memory/`，入口为 `MemoryStore(SQLiteSessionDatabase(path))`。所有数据库操作在线程中执行。
 
 - `enqueue(session_id, through_entry_id)`：冻结从学习进度后一条至指定原文条目的连续序号范围。重复端点返回原任务；同会话只允许一个未完成任务，不同端点须等待，不能重叠处理。新增尾部留到下次。
 - `ready_jobs(limit=100)`：发现待领取及租约已到期的任务，最多 1000 条；不暴露仍有效的运行任务。`get_job` 查看状态，`progress` 查看已学习的原始日志序号。
@@ -38,4 +38,4 @@ pending → claim → running → apply → applied
 
 schema 5 引入 memory_progress、memory_jobs、memory_facts、memory_receipts；当前 schema 6 给 memory_progress 增加 flush_through_seq；既有会话、话题和工具产物不变。旧程序不支持 schema 6。首次启动前应关闭旧进程并备份 SQLite（或使用 SQLite backup）；JSONL 不导出记忆及工具产物，不能用它替代完整数据库备份。本次开发只迁移临时测试库。
 
-运行 `python -m unittest tools.test_memory_storage -q`。测试使用真实临时 SQLite、独立子进程退出和数据库写入故障，覆盖重启、租约竞争、旧令牌拒绝、空结果、幂等重放、批次回滚、原始证据校验和 schema 4 迁移。没有调用真实模型 API。
+运行 `python -m unittest tests.memory.test_memory_storage -q`。测试使用真实临时 SQLite、独立子进程退出和数据库写入故障，覆盖重启、租约竞争、旧令牌拒绝、空结果、幂等重放、批次回滚、原始证据校验和 schema 4 迁移。没有调用真实模型 API。

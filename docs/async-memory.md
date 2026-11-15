@@ -16,7 +16,7 @@ message_threshold 为 1–1000 的消息数，默认 32，统计原始 User/Assi
 
 ## 后台处理与恢复
 
-实现位于 octo_coding/memory_runtime.py、memory_extraction.py。worker 使用 MemoryStore 的任务、令牌、原子收据及 schema 6 待处理水位；不会把模型提炼调用放进主 ReAct 循环。支持接管同一数据库中已就绪的持久任务，多个进程由租约竞争。每批最多 32 条原始消息，按当前模型窗口缩小输入批次；已有事实过多时减少提供的事实，不裁掉本批原文后冒充已读取。单条原文过大则保留错误任务，不推进进度。
+实现位于 src/long_term_memory/memory_runtime.py、src/long_term_memory/memory_extraction.py。worker 使用 MemoryStore 的任务、令牌、原子收据及 schema 6 待处理水位；不会把模型提炼调用放进主 ReAct 循环。支持接管同一数据库中已就绪的持久任务，多个进程由租约竞争。每批最多 32 条原始消息，按当前模型窗口缩小输入批次；已有事实过多时减少提供的事实，不裁掉本批原文后冒充已读取。单条原文过大则保留错误任务，不推进进度。
 
 原文输入明确限于持久消息的可见文本；不读取图片、thinking、摘要或外置工具产物正文。原始工具消息若只含产物预览，后台实际读取的也只是该预览。每条输入带消息/会话 ID、原始时间戳和请求/话题身份；事实来源由 MemoryStore 再校验。偏好必须引用真实用户消息；模型返回的更正目标还必须是实际提供给它的有效事实 ID。
 
@@ -34,6 +34,6 @@ close_timeout 只限制退出时等待网络提炼的时间。取消时尝试释
 
 ## 验证与边界
 
-python -m unittest tools.test_async_memory -q 使用临时 SQLite、FakeProvider 和本地 HTTP 模拟中转站；验证独立请求、同模型同接口、无工具提炼、非阻塞聊天、阈值计数、关闭恢复、配置关闭、偏好范围、工具循环固定快照、会话替换及原始证据。未使用真实用户数据库、Key 或付费 API。
+python -m unittest tests.memory.test_async_memory -q 使用临时 SQLite、FakeProvider 和本地 HTTP 模拟中转站；验证独立请求、同模型同接口、无工具提炼、非阻塞聊天、阈值计数、关闭恢复、配置关闭、偏好范围、工具循环固定快照、会话替换及原始证据。未使用真实用户数据库、Key 或付费 API。
 
 自动提炼会增加模型调用量，实际提炼质量仍需用户所选模型实测。SDK 未配置独立提炼器时遵循上述默认；模型输出的字段/来源校验不能证明语义正确。未实现向量检索、事实适用范围、Web 记忆管理或远端独立 worker 服务。本次升级到 schema 6，仅给 memory_progress 增加 flush_through_seq，原有事实、任务、进度和收据保留。升级前关闭旧进程并备份 SQLite；旧版不支持 schema 6，JSONL 不能替代完整数据库备份。
