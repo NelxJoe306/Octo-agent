@@ -7,3 +7,5 @@ dist/
 memory.md
 memory.md.lock
 .memory.md.*.tmp
+
+!dependencies/build/
