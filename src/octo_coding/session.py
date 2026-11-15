@@ -50,8 +50,8 @@ from octo_agent.session.jsonl import entry_to_json_line
 from octo_agent.session.tree import SessionTreeError, path_to_entry
 from octo_agent.tool_history import ToolHistoryRepair, repair_tool_history
 from octo_agent.tools import AgentTool, AgentToolResult
-from octo_agent.memory import MemoryStore
-from octo_coding.memory_runtime import MemoryRuntime, MemorySettings, MemoryExtractor, explicit_memory_request, load_memory_settings
+from octo_memory import MemoryStore
+from octo_memory.runtime import MemoryRuntime, MemorySettings, MemoryExtractor, explicit_memory_request, load_memory_settings
 from octo_agent.session.artifacts import ToolArtifactStore
 from octo_coding.artifacts import ArtifactTools, READ_ARTIFACT_TOOL
 from octo_agent.types import JSONValue
@@ -492,7 +492,7 @@ class CodingSession:
     def _create_memory_runtime(self) -> MemoryRuntime | None:
         if not isinstance(self._config.storage, SQLiteSessionStorage):
             return None
-        settings = self._config.memory_settings or load_memory_settings(self._resource_paths.paths)
+        settings = self._config.memory_settings or load_memory_settings((self._resource_paths.paths or OctoPaths()).home / 'settings.json')
         if not settings.enabled:
             return None
         return MemoryRuntime(MemoryStore(self._config.storage.database), self._config.storage.session_id,
@@ -521,7 +521,7 @@ class CodingSession:
             await self._memory.wait_idle()
 
     async def _extract_memory(self, job, sources, facts):
-        from octo_coding.memory_extraction import extract_operations
+        from octo_memory.extraction import extract_operations
         model, window = self.model, self.context_window_tokens
         effective = self._provider_registry.effective(self.provider_name)
         dynamic = effective.definition if effective is not None and isinstance(effective.definition, DynamicProvider) else None

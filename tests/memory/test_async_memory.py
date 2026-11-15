@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from octo_agent.memory import AddFact, MemoryStore
+from octo_memory import AddFact, MemoryStore
 from octo_agent.messages import UserMessage
 from octo_agent.session import MessageEntry, SQLiteSessionStorage
 from octo_agent.session.sqlite import SQLiteSessionDatabase
@@ -22,7 +22,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.store = MemoryStore(SQLiteSessionDatabase(self.path))
 
     async def test_background_call_does_not_wait_for_model_and_next_session_recalls_preference(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         entered = asyncio.Event()
         finish = asyncio.Event()
         async def extract(job, sources, facts):
@@ -45,7 +45,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 1)
 
     async def test_extractor_uses_separate_tool_free_request_and_validates_model_draft(self):
-        from octo_coding.memory_extraction import extract_operations
+        from octo_memory.extraction import extract_operations
         from octo_ai.fake import FakeProvider
         from octo_agent.messages import AssistantMessage
         from octo_agent.provider_events import AssistantDoneEvent
@@ -63,7 +63,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_session_replies_before_memory_finishes_and_next_request_has_bounded_recall(self):
         from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.memory_runtime import MemorySettings
+        from octo_memory.runtime import MemorySettings
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_ai.fake import FakeProvider
@@ -100,7 +100,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(any('Stored user preferences' in entry.message.text for entry in await self.storage.read_all() if isinstance(entry, MessageEntry)))
 
     async def test_threshold_counts_original_messages_and_excludes_summaries(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         from octo_agent.session import CompactionEntry
         from octo_agent.messages import AssistantMessage, ToolResultMessage
         calls = []
@@ -122,7 +122,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 4)
 
     async def test_small_model_batches_keep_every_original_source(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         seen = []
         async def extract(job, sources, facts):
             seen.append(tuple(source.reference.entry_id for source in sources))
@@ -137,7 +137,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 3)
 
     async def test_normal_close_persists_short_tail_and_cancels_slow_model_for_restart(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         entered = asyncio.Event()
         async def slow(job, sources, facts):
             entered.set()
@@ -161,7 +161,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 1)
 
     async def test_normal_close_extracts_tail_below_threshold(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         seen = []
         async def extract(job, sources, facts):
             seen.extend(source.reference.entry_id for source in sources)
@@ -173,7 +173,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 1)
 
     async def test_close_keeps_later_tail_durable_behind_running_job_for_other_session_recovery(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         entered = asyncio.Event()
         async def slow(job, sources, facts):
             entered.set()
@@ -196,7 +196,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ['first', 'later-tail'])
 
     async def test_extraction_respects_native_output_ceiling(self):
-        from octo_coding.memory_extraction import extract_operations
+        from octo_memory.extraction import extract_operations
         from octo_ai.fake import FakeProvider
         from octo_agent.messages import AssistantMessage
         from octo_agent.provider_events import AssistantDoneEvent
@@ -226,7 +226,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restricted.calls,[])
 
     async def test_restart_detects_explicit_request_without_in_memory_trigger(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         seen = []
         async def extract(job, sources, facts):
             seen.extend(source.reference.entry_id for source in sources)
@@ -240,7 +240,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 1)
 
     async def test_bad_model_result_is_diagnosed_and_can_be_recovered_without_lost_progress(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         async def fail(job, sources, facts):
             raise ValueError('Invalid memory draft')
         runtime = MemoryRuntime(self.store, 'one', fail, MemorySettings(message_threshold=1))
@@ -260,7 +260,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('one'), 1)
 
     async def test_recall_is_bounded_and_excludes_generic_facts(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings
         await self.storage.append(MessageEntry(id='source', message=UserMessage(content='I prefer Python; project runtime is 3.12')))
         lease = await self.store.claim((await self.store.enqueue('one', 'source')).id)
         await self.store.apply(lease, [AddFact(text='Personal Python preference', category='preference', source_entry_ids=('source',)),
@@ -274,15 +274,15 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await runtime.recall(max_tokens=1), '')
 
     async def test_local_settings_validate_and_can_disable_background_work(self):
-        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings, load_memory_settings
+        from octo_memory.runtime import MemoryRuntime, MemorySettings, load_memory_settings
         from octo_coding.paths import OctoPaths
         import json
         paths = OctoPaths(home=Path(self.temp.name))
         config = paths.home/'settings.json'
         with patch.dict(os.environ, {'OCTO_DISABLE_MEMORY':'0'}):
-            self.assertTrue(load_memory_settings(paths).enabled)
+            self.assertTrue(load_memory_settings(paths.home/'settings.json').enabled)
         config.write_text(json.dumps({'memory': {'enabled': False, 'message_threshold': 8}, 'shellCommandPrefix': ''}), encoding='utf-8')
-        settings = load_memory_settings(paths)
+        settings = load_memory_settings(paths.home/'settings.json')
         self.assertFalse(settings.enabled)
         self.assertEqual(settings.message_threshold, 8)
         async def unexpected(job, sources, facts): self.fail('Disabled memory called model')
@@ -292,13 +292,13 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         await runtime.aclose()
         self.assertIsNone(await self.store.pending_job('one'))
         config.write_text('{"memory":{"message_threshold":true}}', encoding='utf-8')
-        with self.assertRaises(ValueError): load_memory_settings(paths)
+        with self.assertRaises(ValueError): load_memory_settings(paths.home/'settings.json')
         config.write_text('{"memory":{"enabled":true}}', encoding='utf-8')
         with patch.dict(os.environ, {'OCTO_DISABLE_MEMORY':'1'}):
-            self.assertFalse(load_memory_settings(paths).enabled)
+            self.assertFalse(load_memory_settings(paths.home/'settings.json').enabled)
 
     async def test_model_draft_errors_and_oversized_input_do_not_advance_progress(self):
-        from octo_coding.memory_extraction import extract_operations
+        from octo_memory.extraction import extract_operations
         from octo_ai.fake import FakeProvider
         from octo_agent.messages import AssistantMessage
         from octo_agent.provider_events import AssistantDoneEvent
@@ -320,7 +320,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_new_and_resumed_sessions_keep_extractor_and_source_identity(self):
         from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.memory_runtime import MemorySettings
+        from octo_memory.runtime import MemorySettings
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_coding.session_manager import SessionManager
@@ -359,7 +359,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_aborted_prepared_session_does_not_enqueue_or_call_memory_model(self):
         from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.memory_runtime import MemorySettings
+        from octo_memory.runtime import MemorySettings
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_ai.fake import FakeProvider
@@ -379,7 +379,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_preference_snapshot_stays_frozen_during_tool_loop(self):
         from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.memory_runtime import MemorySettings
+        from octo_memory.runtime import MemorySettings
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_ai.fake import FakeProvider
@@ -416,7 +416,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from threading import Thread
         from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.memory_runtime import MemorySettings
+        from octo_memory.runtime import MemorySettings
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_coding.provider_config import OpenAICompatibleProviderConfig
@@ -496,7 +496,7 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_static_new_session_never_starts_prepared_worker(self):
         from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.memory_runtime import MemorySettings
+        from octo_memory.runtime import MemorySettings
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_coding.session_manager import SessionManager

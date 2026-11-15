@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from octo_coding.memory_runtime import MemorySettings
+from octo_memory.runtime import MemorySettings
 
 from octo_agent.messages import AssistantMessage, UserMessage
 from octo_agent.provider_events import AssistantDoneEvent

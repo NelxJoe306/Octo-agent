@@ -6,7 +6,7 @@
     "dev": "next dev --hostname 127.0.0.1 --port 18300",
     "build": "next build",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test lib/*.test.ts"
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "katex": "0.16.47",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { snapshotSchema } from "./topic-map";
-import { mergeMessagePage } from "./message-window";
+import { snapshotSchema } from "../lib/topic-map";
+import { mergeMessagePage } from "../lib/message-window";
 
 function page(sequences: number[], options = {}) {
   return snapshotSchema.parse({

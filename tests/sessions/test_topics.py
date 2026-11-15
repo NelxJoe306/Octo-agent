@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import httpx
 
-from octo_coding.memory_runtime import MemorySettings
+from octo_memory.runtime import MemorySettings
 
 from octo_agent.events import MessageEndEvent, ToolExecutionEndEvent
 from octo_agent.messages import AssistantMessage, UserMessage, ToolCall

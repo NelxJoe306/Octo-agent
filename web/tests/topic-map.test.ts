@@ -6,7 +6,7 @@ import {
   layoutRounds,
   turnSchema,
   openTopicTab,
-} from "./topic-map";
+} from "../lib/topic-map";
 
 const fixture = {
   session_id: "session",

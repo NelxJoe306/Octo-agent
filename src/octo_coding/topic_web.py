@@ -29,7 +29,7 @@ class TopicCommand(BaseModel):
 
 class TopicWeb:
     def __init__(self, session: CodingSession, *, directory: Path | None = None, port: int = 0) -> None:
-        directory = directory or Path(__file__).resolve().parents[1] / 'web' / 'out'
+        directory = directory or Path(__file__).resolve().parents[2] / 'web' / 'out'
         if not (directory / 'index.html').is_file():
             raise ValueError('请先在 web 目录执行 npm run build')
         self.session = session

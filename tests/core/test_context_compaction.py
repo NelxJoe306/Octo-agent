@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from octo_coding.memory_runtime import MemorySettings
+from octo_memory.runtime import MemorySettings
 
 from octo_agent.events import MessageEndEvent
 from octo_agent.context_budget import ContextBudgetExceeded

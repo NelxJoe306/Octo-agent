@@ -10,7 +10,7 @@ import sqlite3
 from time import time
 from uuid import uuid4
 
-from octo_agent.memory.models import (
+from octo_memory.models import (
     MemoryOperation, MemoryConflict, MemoryFact, MemoryJob, MemoryLease, MemoryReceipt,
     MemorySource, SourceReference, operation_adapter,
 )

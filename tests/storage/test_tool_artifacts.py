@@ -7,7 +7,7 @@ import re
 from unittest.mock import patch
 import unittest
 
-from octo_coding.memory_runtime import MemorySettings
+from octo_memory.runtime import MemorySettings
 
 from octo_agent.messages import ToolCall
 from octo_agent.session import SQLiteSessionStorage

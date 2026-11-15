@@ -24,7 +24,7 @@ class MemoryStorageTests(unittest.IsolatedAsyncioTestCase):
         await self.storage.append(self.first)
 
     async def test_fact_job_progress_and_receipt_survive_restart(self):
-        from octo_agent.memory import AddFact, MemoryStore
+        from octo_memory import AddFact, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         job = await store.enqueue('source', 'first')
         self.assertEqual((job.start_seq, job.end_seq, job.state), (1, 1, 'pending'))
@@ -43,7 +43,7 @@ class MemoryStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await restarted.get_job(job.id)).state, 'applied')
 
     async def test_correction_and_retraction_keep_original_evidence_across_sessions(self):
-        from octo_agent.memory import AddFact, SupersedeFact, RetractFact, MemoryStore
+        from octo_memory import AddFact, SupersedeFact, RetractFact, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         lease = await store.claim((await store.enqueue('source', 'first')).id)
         initial = await store.apply(lease, [AddFact(text='偏好 Python', category='preference', source_entry_ids=('first',))])
@@ -67,11 +67,11 @@ class MemoryStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await store.receipt(retracted.job_id)).operations[0].source_entry_ids, ('retract',))
 
     async def test_process_exit_leaves_recoverable_job_without_stealing_live_lease(self):
-        from octo_agent.memory import MemoryConflict, MemoryStore
+        from octo_memory import MemoryConflict, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path), clock=lambda: 100)
         job = await store.enqueue('source', 'first')
         script = '''import asyncio, os, sys
-from octo_agent.memory import MemoryStore
+from octo_memory import MemoryStore
 from octo_agent.session.sqlite import SQLiteSessionDatabase
 async def main():
     store = MemoryStore(SQLiteSessionDatabase(sys.argv[1]), clock=lambda: 100)
@@ -95,7 +95,7 @@ asyncio.run(main())
         self.assertEqual(await restarted.ready_jobs(), ())
 
     async def test_reclaim_fences_old_worker_and_release_requeues_with_error(self):
-        from octo_agent.memory import AddFact, MemoryConflict, MemoryStore
+        from octo_memory import AddFact, MemoryConflict, MemoryStore
         clock = [100.0]
         store = MemoryStore(SQLiteSessionDatabase(self.path), clock=lambda: clock[0])
         job = await store.enqueue('source', 'first')
@@ -117,7 +117,7 @@ asyncio.run(main())
         self.assertIsNone((await store.get_job(job.id)).last_error)
 
     async def test_replay_frozen_range_and_empty_extraction_advance_exactly_once(self):
-        from octo_agent.memory import AddFact, MemoryConflict, MemoryStore
+        from octo_memory import AddFact, MemoryConflict, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         job = await store.enqueue('source', 'first')
         await self.storage.append(MessageEntry(id='tail', message=UserMessage(content='Later message')))
@@ -143,7 +143,7 @@ asyncio.run(main())
         self.assertEqual(len(await store.facts()), 1)
 
     async def test_evidence_rejects_summaries_other_sessions_and_future_messages(self):
-        from octo_agent.memory import AddFact, MemoryStore
+        from octo_memory import AddFact, MemoryStore
         await self.storage.append(CompactionEntry(id='summary', summary='Invented preference'))
         await self.storage.append(MessageEntry(id='assistant', message=AssistantMessage(content='Maybe prefers Java', model='fake')))
         store = MemoryStore(SQLiteSessionDatabase(self.path))
@@ -164,7 +164,7 @@ asyncio.run(main())
         self.assertEqual((await store.facts())[0].sources[0].role, 'assistant')
 
     async def test_receipt_write_failure_rolls_back_facts_progress_and_job_state(self):
-        from octo_agent.memory import AddFact, MemoryStore
+        from octo_memory import AddFact, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         job = await store.enqueue('source', 'first')
         lease = await store.claim(job.id)
@@ -188,7 +188,7 @@ asyncio.run(main())
         self.assertEqual(len(await restarted.facts()), 1)
 
     async def test_partial_operation_failure_does_not_commit_earlier_operation(self):
-        from octo_agent.memory import AddFact, MemoryStore
+        from octo_memory import AddFact, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         job = await store.enqueue('source', 'first')
         lease = await store.claim(job.id)
@@ -200,7 +200,7 @@ asyncio.run(main())
         self.assertIsNone(await store.receipt(job.id))
 
     async def test_concurrent_claims_have_one_winner_and_sessions_progress_independently(self):
-        from octo_agent.memory import MemoryConflict, MemoryLease, MemoryStore
+        from octo_memory import MemoryConflict, MemoryLease, MemoryStore
         first = MemoryStore(SQLiteSessionDatabase(self.path))
         second = MemoryStore(SQLiteSessionDatabase(self.path))
         enqueued = await asyncio.gather(first.enqueue('source', 'first'), second.enqueue('source', 'first'))
@@ -215,7 +215,7 @@ asyncio.run(main())
         self.assertEqual(await second.progress('independent'), 1)
 
     async def test_schema_four_upgrade_keeps_history_topic_and_tool_artifact(self):
-        from octo_agent.memory import MemoryStore
+        from octo_memory import MemoryStore
         from octo_agent.messages import ToolCall
         from octo_agent.session.artifacts import ToolArtifactStore
         from octo_agent.session.topics import SessionTopics
@@ -237,7 +237,7 @@ asyncio.run(main())
             self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 6)
 
     async def test_sources_keep_request_topic_path_after_navigation_and_rename(self):
-        from octo_agent.memory import AddFact, MemoryStore
+        from octo_memory import AddFact, MemoryStore
         from octo_agent.session.topics import SessionTopics
         topics = SessionTopics(self.storage)
         branch = topics.create(parent_id='main', title='Original branch', activate=True)
@@ -258,7 +258,7 @@ asyncio.run(main())
         self.assertEqual(await store.facts(source_session_id='other'), ())
 
     async def test_invalid_correction_rolls_back_and_preference_cannot_be_retracted_by_assistant(self):
-        from octo_agent.memory import AddFact, MemoryConflict, MemoryStore, RetractFact, SupersedeFact
+        from octo_memory import AddFact, MemoryConflict, MemoryStore, RetractFact, SupersedeFact
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         original = await store.apply(await store.claim((await store.enqueue('source', 'first')).id),
                                      [AddFact(text='Python', category='preference', source_entry_ids=('first',))])
@@ -278,7 +278,7 @@ asyncio.run(main())
         self.assertIsNone(await store.receipt(lease.job.id))
 
     async def test_invalid_drafts_and_lease_parameters_fail_without_writes(self):
-        from octo_agent.memory import AddFact, MemoryStore
+        from octo_memory import AddFact, MemoryStore
         store = MemoryStore(SQLiteSessionDatabase(self.path))
         job = await store.enqueue('source', 'first')
         for duration in (True, 0, -1, float('nan'), float('inf'), 3601):

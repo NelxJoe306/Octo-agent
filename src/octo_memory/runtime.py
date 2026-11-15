@@ -5,12 +5,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 import json
 from os import environ
+from pathlib import Path
 import re
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from octo_agent.context_budget import estimate_budget_text
-from octo_agent.memory import MemoryConflict, MemoryFact, MemoryJob, MemoryOperation, MemorySource, MemoryStore
+from octo_memory import MemoryConflict, MemoryFact, MemoryJob, MemoryOperation, MemorySource, MemoryStore
 
 
 class MemorySettings(BaseModel):
@@ -28,9 +29,7 @@ def explicit_memory_request(text: str) -> bool:
     return bool(re.search(r'记住|记一下|记下来|更正|纠正|忘掉|不要再记|\bremember\b|\bforget\b|\bcorrect\b', text, re.IGNORECASE))
 
 
-def load_memory_settings(paths=None) -> MemorySettings:
-    from octo_coding.paths import OctoPaths
-    path = (paths or OctoPaths()).home / 'settings.json'
+def load_memory_settings(path: Path) -> MemorySettings:
     data = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
     if not isinstance(data, dict):
         raise ValueError('settings.json must be an object')

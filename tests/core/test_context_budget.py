@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import httpx
 
-from octo_coding.memory_runtime import MemorySettings
+from octo_memory.runtime import MemorySettings
 
 from octo_agent.context_budget import (
     ContextBudgetExceeded, ContextBudgetPolicy, estimate_budget_text, evaluate_context_budget,

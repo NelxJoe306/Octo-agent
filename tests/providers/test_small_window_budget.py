@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import httpx
 
-from octo_coding.memory_runtime import MemorySettings
+from octo_memory.runtime import MemorySettings
 
 from octo_agent.context_budget import ContextBudgetExceeded
 from octo_ai.anthropic import AnthropicProvider
@@ -27,7 +27,7 @@ from octo_coding.extensions.providers import DynamicProvider, ProviderModel, NoA
 from octo_coding.resources import OctoResourcePaths
 from octo_coding.session import CodingSession, CodingSessionConfig
 from octo_coding.session_manager import SessionManager
-from tools import test_context_budget as fixtures
+from tests.core import test_context_budget as fixtures
 
 
 class SmallWindowBudgetTests(unittest.IsolatedAsyncioTestCase):

@@ -26,8 +26,8 @@ dependencies = [
 octo = "octo_coding.cli:app"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["octo_agent*", "octo_ai*", "octo_coding*"]
+where = ["src"]
+include = ["octo_agent*", "octo_ai*", "octo_memory*", "octo_coding*"]
 namespaces = false
 
 [tool.setuptools.package-data]
