@@ -501,6 +501,7 @@ def _status_command(context: CommandContext) -> CommandResult:
                 f"messages={context_usage.message_tokens}, "
                 f"tools={context_usage.tool_tokens}",
             )
+    lines.append("Memory: " + getattr(session, "memory_status", "disabled"))
     summary_failures = getattr(session, "context_summary_failures", 0)
     lines.append(f"Automatic summary failures: {summary_failures}; disabled: {summary_failures >= 3}")
     budget_error = getattr(session, "last_context_budget_error", None)
