@@ -487,6 +487,7 @@ class CodingSession:
         self._attach_persistence_listener()
         self._memory_snapshot = ''
         self._memory = self._create_memory_runtime()
+        self._memory_activated = not config.defer_authoritative_writes
 
     def _create_memory_runtime(self) -> MemoryRuntime | None:
         if not isinstance(self._config.storage, SQLiteSessionStorage):
@@ -498,6 +499,11 @@ class CodingSession:
                              self._config.memory_extractor or self._extract_memory, settings,
                              source_budget=self._memory_source_budget)
 
+    def activate_memory(self) -> None:
+        self._memory_activated = True
+        if self._memory is not None:
+            self._memory.notify()
+
     def _memory_source_budget(self) -> int:
         return max(1, min(8000, self.context_window_tokens // 2))
 
@@ -505,10 +511,12 @@ class CodingSession:
     def memory_status(self) -> str:
         if self._memory is None:
             return 'disabled'
+        if not self._memory_activated:
+            return 'waiting for session adoption'
         return ('background error: ' + self._memory.last_error) if self._memory.last_error else 'enabled (background; preference recall only)'
 
     async def flush_memory(self) -> None:
-        if self._memory is not None:
+        if self._memory is not None and self._memory_activated:
             self._memory.notify(force=True)
             await self._memory.wait_idle()
 
@@ -859,7 +867,7 @@ class CodingSession:
 
             await _finish_aborted_session_close(session)
             raise
-        if session._memory is not None and not config.defer_authoritative_writes:
+        if session._memory is not None and session._memory_activated:
             session._memory.notify()
         return session
 
@@ -3101,7 +3109,7 @@ class CodingSession:
                 runtime_provider_config=runtime_provider_config,
                 dynamic_provider=dynamic_provider,
                 owns_initial_provider=dynamic_provider is not None,
-                defer_authoritative_writes=dynamic_provider is not None,
+                defer_authoritative_writes=True,
                 thinking_level=thinking_level,
                 index_on_first_persist=True,
                 extension_runtime=self._extension_runtime,
@@ -3213,7 +3221,7 @@ class CodingSession:
             if self._memory is not None:
                 self._memory.extractor = self._config.memory_extractor or self._extract_memory
                 self._memory.source_budget = self._memory_source_budget
-                self._memory.notify()
+            self.activate_memory()
             self._extension_runtime.bind(self)
             self._extension_runtime.attach_harness_listener(self._harness.subscribe)
 
@@ -3274,7 +3282,7 @@ class CodingSession:
     async def _close_owned_resources(self) -> None:
 
         if self._memory is not None:
-            await self._memory.aclose(flush=not self._config.defer_authoritative_writes)
+            await self._memory.aclose(flush=self._memory_activated)
         error: BaseException | None = None
         try:
             if self._extension_runtime.active:
@@ -3677,7 +3685,7 @@ class CodingSession:
         if isinstance(event, AgentStartEvent):
             self._context_overflow_attempted = False
             self._memory_snapshot = ''
-            if self._memory is not None:
+            if self._memory is not None and self._memory_activated:
                 self._memory.notify()
                 try:
                     self._memory_snapshot = await self._memory.recall(max_tokens=min(1024, self.context_window_tokens // 12))
@@ -3716,7 +3724,7 @@ class CodingSession:
         await self._refresh_persisted_state(leaf_id=self._last_parent_id)
         self._persisted_message_ids.add(message_id)
         self._pending_message_writes.pop(message_id, None)
-        if self._memory is not None:
+        if self._memory is not None and self._memory_activated:
             self._memory.notify(force=isinstance(message, UserMessage) and explicit_memory_request(message.text))
         self._notify_topics()
         self._invalidate_context_usage_cache()

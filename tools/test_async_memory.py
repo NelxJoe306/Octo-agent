@@ -172,6 +172,59 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, ['short'])
         self.assertEqual(await self.store.progress('one'), 1)
 
+    async def test_close_keeps_later_tail_durable_behind_running_job_for_other_session_recovery(self):
+        from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
+        entered = asyncio.Event()
+        async def slow(job, sources, facts):
+            entered.set()
+            await asyncio.Event().wait()
+        await self.storage.append(MessageEntry(id='first', message=UserMessage(content='first turn')))
+        runtime = MemoryRuntime(self.store, 'one', slow, MemorySettings(close_timeout=0.05))
+        runtime.notify(force=True)
+        await asyncio.wait_for(entered.wait(), 2)
+        await self.storage.append(MessageEntry(id='later-tail', message=UserMessage(content='final preference in later tail')))
+        await runtime.aclose()
+        seen = []
+        async def recovered(job, sources, facts):
+            seen.extend(source.reference.entry_id for source in sources)
+            return []
+        restarted = MemoryRuntime(self.store, 'different-session', recovered, MemorySettings())
+        self.addAsyncCleanup(restarted.aclose)
+        restarted.notify()
+        await restarted.wait_idle()
+        self.assertEqual(await self.store.progress('one'), 2)
+        self.assertEqual(seen, ['first', 'later-tail'])
+
+    async def test_extraction_respects_native_output_ceiling(self):
+        from octo_coding.memory_extraction import extract_operations
+        from octo_ai.fake import FakeProvider
+        from octo_agent.messages import AssistantMessage
+        from octo_agent.provider_events import AssistantDoneEvent
+        class CappedProvider(FakeProvider):
+            def __init__(self):
+                super().__init__([[AssistantDoneEvent(reason='stop',message=AssistantMessage(content='[]',model='fake'))]])
+                self._request_output_tokens = 1024
+            def configure_request_budget(self, **kwargs):
+                if kwargs['output_override'] > 1024:
+                    raise ValueError('Native model output maximum is 1024')
+                return super().configure_request_budget(**kwargs)
+        await self.storage.append(MessageEntry(id='source',message=UserMessage(content='preference')))
+        job = await self.store.enqueue('one','source')
+        provider = CappedProvider()
+        self.assertEqual(await extract_operations(provider,model='fake',window=8192,job=job,
+            sources=await self.store.sources(job.id),facts=()), ())
+        self.assertEqual(provider.request_token_budget().max_output_tokens,1024)
+        from octo_ai.model_limits import RequestTokenBudget
+        from octo_agent.context_budget import ContextBudgetExceeded
+        class ExtraSystemProvider(CappedProvider):
+            def request_token_budget(self):
+                return RequestTokenBudget(self._request_output_tokens, additional_system='X'*6000, context_window=2048)
+        restricted=ExtraSystemProvider()
+        with self.assertRaises(ContextBudgetExceeded):
+            await extract_operations(restricted,model='fake',window=8192,job=job,
+                sources=await self.store.sources(job.id),facts=())
+        self.assertEqual(restricted.calls,[])
+
     async def test_restart_detects_explicit_request_without_in_memory_trigger(self):
         from octo_coding.memory_runtime import MemoryRuntime, MemorySettings
         seen = []
@@ -423,6 +476,73 @@ class AsyncMemoryTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.to_thread(server.shutdown)
             server.server_close()
             await asyncio.to_thread(thread.join, 2)
+
+
+    async def test_schema_five_upgrade_preserves_applied_fact_progress_and_receipt(self):
+        import sqlite3
+        from contextlib import closing
+        await self.storage.append(MessageEntry(id='source',message=UserMessage(content='Python preference')))
+        job=await self.store.enqueue('one','source')
+        receipt=await self.store.apply(await self.store.claim(job.id),[AddFact(text='Python',category='preference',source_entry_ids=('source',))])
+        with closing(sqlite3.connect(self.path)) as connection:
+            connection.execute('ALTER TABLE memory_progress DROP COLUMN flush_through_seq')
+            connection.execute('PRAGMA user_version=5')
+            connection.commit()
+        restarted=MemoryStore(SQLiteSessionDatabase(self.path))
+        self.assertEqual(await restarted.progress('one'),1)
+        self.assertEqual(await restarted.receipt(job.id),receipt)
+        self.assertEqual((await restarted.facts())[0].text,'Python')
+        self.assertEqual(await restarted.flush_targets(),())
+
+    async def test_cancelled_static_new_session_never_starts_prepared_worker(self):
+        from octo_coding.session import CodingSession, CodingSessionConfig
+        from octo_coding.memory_runtime import MemorySettings
+        from octo_coding.paths import OctoPaths
+        from octo_coding.resources import OctoResourcePaths
+        from octo_coding.session_manager import SessionManager
+        from octo_ai.fake import FakeProvider
+        root=Path(self.temp.name)
+        paths=OctoPaths(home=root/'home',agents_home=root/'agents')
+        manager=SessionManager(paths)
+        record=manager.create_session(cwd=root,model='offline',title='Prepared fixture')
+        marker=root/'shutdown-entered'
+        extension=root/'hold_lifecycle.py'
+        extension.write_text('import asyncio\nfrom pathlib import Path\ndef setup(octo):\n'
+            '    @octo.on("session_shutdown")\n'
+            '    async def hold(event,context):\n'
+            '        if event.reason=="new":\n'
+            f'            Path({str(marker)!r}).write_text("entered")\n'
+            '            await asyncio.Event().wait()\n',encoding='utf-8')
+        calls=[]
+        async def extract(job,sources,facts):
+            calls.append(job.id)
+            return []
+        config=CodingSessionConfig(provider=FakeProvider([]),model='offline',storage=manager.storage_for(record),
+            session_id=record.id,session_manager=manager,cwd=root,system='Test',tools=[],
+            resource_paths=OctoResourcePaths(root=paths.home,agents_root=paths.agents_home,cwd=root,paths=paths),
+            extensions_enabled=False,extension_paths=(extension,),skills_enabled=False,
+            memory_settings=MemorySettings(),memory_extractor=extract)
+        with patch.dict(os.environ,{'OCTO_HOME':str(paths.home),'OCTO_OFFLINE':'1'}):
+            session=await CodingSession.load(config)
+            self.addAsyncCleanup(session.aclose)
+            await session.flush_memory()
+            other=SQLiteSessionStorage(paths.database_path,'other')
+            await other.append(MessageEntry(id='old-job',message=UserMessage(content='pending work')))
+            store=MemoryStore(SQLiteSessionDatabase(paths.database_path))
+            job=await store.enqueue('other','old-job')
+            pending=asyncio.create_task(session.new_session())
+            try:
+                async def wait_marker():
+                    while not marker.exists(): await asyncio.sleep(0.01)
+                await asyncio.wait_for(wait_marker(),5)
+                await asyncio.sleep(0.05)
+            finally:
+                pending.cancel()
+                try: await pending
+                except asyncio.CancelledError: pass
+            self.assertEqual(session.session_id,record.id)
+            self.assertEqual(calls,[])
+            self.assertEqual((await store.get_job(job.id)).state,'pending')
 
 
 if __name__ == '__main__':

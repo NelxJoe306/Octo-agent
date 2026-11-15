@@ -54,7 +54,7 @@ uv run octo providers
 
 SQLite 会话中的大段文本工具结果会保存为持久产物，模型收到首尾预览和 artifact ID，并可通过 read_artifact 分段读取。默认每次 2048 UTF-8 字节、最多 4096；重启恢复同一会话后 ID 仍有效。详见 [产物设计与边界](docs/tool-artifacts.md)。
 
-本版升级会话库到 schema 5。首次运行前关闭旧进程并备份 SQLite；旧版无法直接打开升级后的库，JSONL 导出不包含产物正文或长期记忆。
+本版升级会话库到 schema 6（增加记忆待处理水位）。首次运行前关闭旧进程并备份 SQLite；旧版无法直接打开升级后的库，JSONL 导出不包含产物正文或长期记忆。
 
 ## 长期记忆
 

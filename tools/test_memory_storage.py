@@ -234,7 +234,7 @@ asyncio.run(main())
         self.assertEqual(topics.selected_id, topic)
         self.assertEqual((await artifacts.read(artifact.id)).text, '原始工具输出')
         with closing(sqlite3.connect(self.path)) as connection:
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 5)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0], 6)
 
     async def test_sources_keep_request_topic_path_after_navigation_and_rename(self):
         from octo_agent.memory import AddFact, MemoryStore

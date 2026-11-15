@@ -69,14 +69,14 @@ class MemoryRuntime:
         self._idle.set()
         self._task: asyncio.Task | None = None
         self._closed = False
-        self._flush_tail = False
+        self._force_requested = False
         self._failures: dict[str, int] = {}
         self._retry_at: dict[str, float] = {}
 
     def notify(self, *, force: bool = False) -> None:
         if self._closed or not self.settings.enabled:
             return
-        self._flush_tail |= force
+        self._force_requested |= force
         self._idle.clear()
         self._wake.set()
         if self._task is None:
@@ -104,16 +104,20 @@ class MemoryRuntime:
         finally:
             self._idle.set()
 
-    async def _enqueue_tail(self, *, force: bool = False) -> bool:
-        if await self.store.pending_job(self.session_id) is not None:
-            return False
+    async def _trigger_local(self) -> bool:
         sources = await self.store.unlearned(self.session_id, limit=max(32, self.settings.message_threshold))
         explicit = any(source.reference.role == 'user' and explicit_memory_request(source.message.text) for source in sources)
-        if not sources or (not force and not explicit and not self._flush_tail and len(sources) < self.settings.message_threshold):
-            if not sources:
-                self._flush_tail = False
+        if not sources or (not explicit and len(sources) < self.settings.message_threshold):
             return False
-        self._flush_tail = True
+        target = await self.store.request_flush(self.session_id)
+        return await self._enqueue_range(self.session_id, target)
+
+    async def _enqueue_range(self, session_id: str, through_seq: int) -> bool:
+        if await self.store.pending_job(session_id) is not None:
+            return False
+        sources = await self.store.unlearned(session_id, limit=32, through_seq=through_seq)
+        if not sources:
+            return False
         selected = []
         tokens = 0
         for source in sources[:32]:
@@ -123,20 +127,30 @@ class MemoryRuntime:
             selected.append(source)
             tokens += cost
         try:
-            await self.store.enqueue(self.session_id, selected[-1].reference.entry_id)
+            await self.store.enqueue(session_id, selected[-1].reference.entry_id)
         except MemoryConflict:
             return False
         return True
 
     async def _cycle(self) -> None:
         while not self._closed:
+            if self._force_requested:
+                await self.store.request_flush(self.session_id)
+                self._force_requested = False
             now = asyncio.get_running_loop().time()
             ready = [job for job in await self.store.ready_jobs()
                      if self._failures.get(job.id, 0) < 3 and self._retry_at.get(job.id, 0) <= now]
             if ready:
                 await self._process(ready[0])
                 continue
-            if not await self._enqueue_tail():
+            enqueued = False
+            for session_id, target in await self.store.flush_targets():
+                if await self._enqueue_range(session_id, target):
+                    enqueued = True
+                    break
+            if enqueued:
+                continue
+            if not await self._trigger_local():
                 return
 
     async def _process(self, job: MemoryJob) -> None:
@@ -188,8 +202,8 @@ class MemoryRuntime:
         # 先持久化尾部任务，再给网络提炼有限的退出等待时间。
         try:
             if flush and self.settings.enabled:
-                await self._enqueue_tail(force=True)
-                self.notify(force=True)
+                await self.store.request_flush(self.session_id)
+                self.notify()
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.wait_idle(), self.settings.close_timeout)
         except Exception as exc:

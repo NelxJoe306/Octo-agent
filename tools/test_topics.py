@@ -250,7 +250,7 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         child = topics.create(parent_id='main', title='after upgrade', anchor_entry_id=original.id)
         topics.select(child)
         with storage.database.connection() as connection:
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0],5)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0],6)
             self.assertEqual(connection.execute('SELECT body_json FROM session_entries').fetchone()[0], entry_to_json_line(original))
 
     async def test_continuation_uses_own_mainline_and_root_is_distinct(self):

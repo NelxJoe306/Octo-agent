@@ -28,17 +28,21 @@ async def extract_operations(provider: ModelProvider, *, model: str, window: int
                              sources: tuple[MemorySource, ...], facts: tuple[MemoryFact, ...],
                              configure_budget: bool = True) -> tuple[MemoryOperation, ...]:
     output = max(1, min(2048, window // 4))
+    request_budget = provider.request_token_budget() if isinstance(provider, RequestBudgetProvider) else None
     if configure_budget and isinstance(provider, ConfigurableRequestBudgetProvider):
-        output = provider.configure_request_budget(context_window=window, safety_margin=256,
-                                                   output_override=output).max_output_tokens
-    elif isinstance(provider, RequestBudgetProvider):
-        output = provider.request_token_budget().max_output_tokens
+        output = min(output, request_budget.max_output_tokens)
+        request_budget = provider.configure_request_budget(context_window=window, safety_margin=256, output_override=output)
+    if request_budget is not None:
+        output = request_budget.max_output_tokens
+        if request_budget.context_window is not None:
+            window = min(window, request_budget.context_window)
+    budget_system = MEMORY_SYSTEM + ('\n' + request_budget.additional_system if request_budget is not None else '')
     policy = ContextBudgetPolicy(window, output, safety_margin=256)
     known = list(facts)
     while True:
         payload = {'sources': [source_data(source) for source in sources], 'existing_facts': [fact_data(fact) for fact in known]}
         messages = [UserMessage(content=json.dumps(payload, ensure_ascii=False))]
-        budget = evaluate_context_budget(policy, system=MEMORY_SYSTEM, messages=messages, tools=[])
+        budget = evaluate_context_budget(policy, system=budget_system, messages=messages, tools=[])
         if budget.status != 'BLOCK':
             break
         if not known:

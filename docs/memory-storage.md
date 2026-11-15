@@ -14,7 +14,9 @@
 - `release(lease, error)`：有效租约的处理者主动释放任务，保留最多 2000 字符错误信息，进度不动。异常退出后无需全局重置，等待租约到期重新领取。
 - `facts(source_session_id=None, include_inactive=False, category=None, limit=None)`：查询有效事实，或显式查看旧版本。来源会话筛选是审计过滤，不是项目适用范围。`receipt(job_id)` 返回原操作和新事实 ID，未提交则为空。
 
-`pending_job(session_id)` 查询未完成任务；`unlearned(session_id, limit=100)` 从学习进度后读取最多 1000 条原始消息，供编排器选择下一批范围。facts 可按 category 筛选并限制条数，有限查询优先返回最近事实。
+`pending_job(session_id)` 查询未完成任务；`unlearned(session_id, limit=100, through_seq=最大序号)` 从学习进度后读取最多 1000 条原始消息，供编排器选择下一批范围。facts 可按 category 筛选并限制条数，有限查询优先返回最近事实。
+
+`request_flush(session_id)` 持久保存处理到最后一条原始消息的水位，`flush_targets()` 列出尚未完成的水位。已有任务不被改写，完成后可继续入队水位之前的后续范围；进度达到水位后自动不再列出。
 
 ## 事实与证据
 
@@ -34,6 +36,6 @@ pending → claim → running → apply → applied
 
 ## 升级与验证
 
-会话库升级到 schema 5，增加 memory_progress、memory_jobs、memory_facts、memory_receipts；既有会话、话题和工具产物不变。旧程序不支持 schema 5。首次启动前应关闭旧进程并备份 SQLite（或使用 SQLite backup）；JSONL 不导出记忆及工具产物，不能用它替代完整数据库备份。本次开发只迁移临时测试库。
+schema 5 引入 memory_progress、memory_jobs、memory_facts、memory_receipts；当前 schema 6 给 memory_progress 增加 flush_through_seq；既有会话、话题和工具产物不变。旧程序不支持 schema 6。首次启动前应关闭旧进程并备份 SQLite（或使用 SQLite backup）；JSONL 不导出记忆及工具产物，不能用它替代完整数据库备份。本次开发只迁移临时测试库。
 
 运行 `python -m unittest tools.test_memory_storage -q`。测试使用真实临时 SQLite、独立子进程退出和数据库写入故障，覆盖重启、租约竞争、旧令牌拒绝、空结果、幂等重放、批次回滚、原始证据校验和 schema 4 迁移。没有调用真实模型 API。
