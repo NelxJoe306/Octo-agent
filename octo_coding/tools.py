@@ -144,6 +144,7 @@ def create_coding_tools(
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
     image_support: ImageSupportState | None = None,
+    preserve_full_output: bool = False,
 ) -> list[AgentTool]:
 
     root = Path.cwd() if cwd is None else Path(cwd)
@@ -151,7 +152,7 @@ def create_coding_tools(
         create_read_tool(cwd=root, image_support=image_support),
         create_write_tool(cwd=root),
         create_edit_tool(cwd=root),
-        create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
+        create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix, preserve_full_output=preserve_full_output),
     ]
 
 
@@ -523,6 +524,7 @@ def create_bash_tool_definition(
     *,
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
+    preserve_full_output: bool = False,
 ) -> ToolDefinition:
 
     root = Path.cwd() if cwd is None else Path(cwd)
@@ -570,24 +572,25 @@ def create_bash_tool_definition(
         full_output_path: str | None = None
         output_text = truncation.content or "(no output)"
         if truncation.truncated:
-            full_output_path = _write_temp_output(output)
+            if not preserve_full_output:
+                full_output_path = _write_temp_output(output)
             start_line = truncation.total_lines - truncation.output_lines + 1
             end_line = truncation.total_lines
             if truncation.last_line_partial:
                 output_text += (
                     f"\n\n[Showing last {format_size(truncation.output_bytes)} of line {end_line}. "
-                    f"Full output: {full_output_path}]"
+                    f"Full output: {full_output_path or 'session artifact (read_artifact)'}]"
                 )
             elif truncation.truncated_by == "lines":
                 output_text += (
                     f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines}. "
-                    f"Full output: {full_output_path}]"
+                    f"Full output: {full_output_path or 'session artifact (read_artifact)'}]"
                 )
             else:
                 output_text += (
                     f"\n\n[Showing lines {start_line}-{end_line} of {truncation.total_lines} "
                     f"({format_size(DEFAULT_MAX_OUTPUT_BYTES)} limit). "
-                    f"Full output: {full_output_path}]"
+                    f"Full output: {full_output_path or 'session artifact (read_artifact)'}]"
                 )
 
         exit_code = process.returncode
@@ -605,6 +608,7 @@ def create_bash_tool_definition(
 
         return AgentToolResult(
             content=[TextContent(text=output_text)],
+            unabridged_text=(append_status_block(output, status) if status else output) if truncation.truncated else None,
             is_error=timed_out or cancelled or exit_code not in (0, None),
             details={
                 "command": command,
@@ -623,8 +627,10 @@ def create_bash_tool_definition(
         description=(
             f"Execute a shell command using {shell_environment(prefix)} in the current working directory. Returns stdout and stderr. "
             f"Output is truncated to last {DEFAULT_MAX_OUTPUT_LINES} lines or "
-            f"{DEFAULT_MAX_OUTPUT_BYTES // 1024}KB (whichever is hit first). If truncated, "
-            "full output is saved to a temp file. Optionally provide a timeout in seconds."
+            f"{DEFAULT_MAX_OUTPUT_BYTES // 1024}KB (whichever is hit first). If truncated, " +
+            ("full output is stored as a session artifact; use read_artifact to inspect it. "
+             if preserve_full_output else "full output is saved to a temp file. ") +
+            "Optionally provide a timeout in seconds."
         ),
         prompt_snippet=f"Execute shell commands using {shell_environment(prefix)}",
         prompt_guidelines=(
@@ -657,11 +663,13 @@ def create_bash_tool(
     *,
     cwd: str | Path | None = None,
     shell_command_prefix: str | None = None,
+    preserve_full_output: bool = False,
 ) -> AgentTool:
 
     return create_bash_tool_definition(
         cwd=cwd,
         shell_command_prefix=shell_command_prefix,
+        preserve_full_output=preserve_full_output,
     ).to_agent_tool()
 
 

@@ -1027,6 +1027,7 @@ class ExtensionRuntime:
             updates: dict[str, object] = {}
             if outcome.content is not None:
                 updates["content"] = [TextContent(text=outcome.content)]
+                updates["unabridged_text"] = None
             if outcome.details is not None:
                 updates["details"] = outcome.details
             if updates:

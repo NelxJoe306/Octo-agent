@@ -22,6 +22,7 @@ from octo_agent.messages import (
     CustomMessage,
     Usage,
     ToolResultMessage,
+    ToolCall,
     UserMessage,
     message_text,
     sum_usage,
@@ -48,7 +49,9 @@ from octo_agent.session.entries import SessionEntry
 from octo_agent.session.jsonl import entry_to_json_line
 from octo_agent.session.tree import SessionTreeError, path_to_entry
 from octo_agent.tool_history import ToolHistoryRepair, repair_tool_history
-from octo_agent.tools import AgentTool
+from octo_agent.tools import AgentTool, AgentToolResult
+from octo_agent.session.artifacts import ToolArtifactStore
+from octo_coding.artifacts import ArtifactTools
 from octo_agent.types import JSONValue
 from octo_ai.model_catalog import ModelCatalogProvider, RuntimeModel, RuntimeModelCatalog
 from octo_ai.model_limits import ConfigurableRequestBudgetProvider, ModelLimitsProvider, RequestBudgetProvider, RuntimeModelLimits
@@ -404,9 +407,11 @@ class CodingSession:
         extension_runtime: ExtensionRuntime | None = None,
         image_support: ImageSupportState | None = None,
         project_trust_resolution: ProjectTrustResolution | None = None,
+        artifacts: ArtifactTools | None = None,
     ) -> None:
         self._config = config
         self._state = state
+        self._artifacts = artifacts
         self._harness = harness
         self._extension_runtime = extension_runtime or ExtensionRuntime()
         self._provider_registry = self._extension_runtime.provider_registry
@@ -474,7 +479,13 @@ class CodingSession:
         self._context_overflow_attempted = False
         self._harness.config.prepare_context = self._prepare_session_context
         self._harness.config.recover_context = self._recover_context if self._auto_compact_enabled else None
+        self._harness.config.after_tool_call = self._externalize_tool_result
         self._attach_persistence_listener()
+
+    async def _externalize_tool_result(self, call: ToolCall, result: AgentToolResult, is_error: bool):
+        if self._artifacts is None:
+            return result, is_error
+        return await self._artifacts.externalize(call, result, is_error, request=self._active_topic_request)
 
     @classmethod
     async def load(cls, config: CodingSessionConfig) -> CodingSession:
@@ -683,8 +694,12 @@ class CodingSession:
                 cwd=config.cwd,
                 shell_command_prefix=config.shell_command_prefix,
                 image_support=image_support,
+                preserve_full_output=isinstance(config.storage, SQLiteSessionStorage),
             )
         )
+        artifacts = ArtifactTools(ToolArtifactStore(config.storage)) if isinstance(config.storage, SQLiteSessionStorage) else None
+        if artifacts is not None:
+            base_tools = artifacts.include_read_tool(base_tools)
         tools = extension_runtime.compose_tools(base_tools)
         system = (
             config.system
@@ -745,6 +760,7 @@ class CodingSession:
             extension_runtime=extension_runtime,
             image_support=image_support,
             project_trust_resolution=trust_resolution,
+            artifacts=artifacts,
         )
         if config.owns_initial_provider:
 
@@ -2580,8 +2596,11 @@ class CodingSession:
                 cwd=self._config.cwd,
                 shell_command_prefix=self._config.shell_command_prefix,
                 image_support=self._image_support,
+                preserve_full_output=self._artifacts is not None,
             )
         )
+        if self._artifacts is not None:
+            base_tools = self._artifacts.include_read_tool(base_tools)
         staged_tools = staged_runtime.compose_tools(base_tools)
         staged_commands = self._config.command_registry or staged_runtime.build_command_registry()
         after_system_prompt_inputs = _system_prompt_resource_signatures(
@@ -3070,6 +3089,8 @@ class CodingSession:
             self._state = replacement._state
             self._harness = replacement._harness
             self._topics = replacement._topics
+            self._artifacts = replacement._artifacts
+            self._harness.config.after_tool_call = self._externalize_tool_result
             self._topic_display_path = None
             self._active_topic_request = None
             self._topic_message_requests = {}
