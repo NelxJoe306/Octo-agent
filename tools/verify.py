@@ -143,10 +143,12 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
         from octo_coding.paths import OctoPaths
         from octo_coding.resources import OctoResourcePaths
         from octo_coding.session import CodingSession, CodingSessionConfig
+        from octo_coding.memory_runtime import MemorySettings
 
         provider = FakeProvider(streams)
         paths = OctoPaths(home=self.base / "home", agents_home=self.base / "agents")
         config = CodingSessionConfig(
+            memory_settings=MemorySettings(enabled=False),
             provider=provider, model="offline", storage=storage or JsonlSessionStorage(self.base / "session.jsonl"),
             cwd=self.base, resource_paths=OctoResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=self.base, paths=paths),
             auto_compact_enabled=False, extensions_enabled=False, extension_paths=extension_paths,

@@ -31,7 +31,7 @@ class SQLiteSessionDatabase:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4, 5):
+            if version not in (0, 1, 2, 3, 4, 5, 6):
                 raise RuntimeError(f"Unsupported session database version: {version}")
             if version == 0:
                 connection.execute("BEGIN IMMEDIATE")
@@ -141,6 +141,17 @@ class SQLiteSessionDatabase:
                     connection.execute("""CREATE TRIGGER IF NOT EXISTS memory_receipts_no_delete BEFORE DELETE ON memory_receipts
                         BEGIN SELECT RAISE(ABORT, 'Memory receipts are immutable'); END""")
                     connection.execute("PRAGMA user_version = 5")
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+            if version < 6:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {row[1] for row in connection.execute("PRAGMA table_info(memory_progress)")}
+                    if "flush_through_seq" not in columns:
+                        connection.execute("ALTER TABLE memory_progress ADD COLUMN flush_through_seq INTEGER NOT NULL DEFAULT 0")
+                    connection.execute("PRAGMA user_version = 6")
                     connection.commit()
                 except BaseException:
                     connection.rollback()

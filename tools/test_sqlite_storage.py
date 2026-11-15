@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.messages import UserMessage
 from octo_agent.session import MessageEntry, entry_to_json_line
 
@@ -21,6 +23,9 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.path = self.base / "octo.db"
         self.environment = patch.dict(os.environ, {"OCTO_HOME": str(self.base / "isolated-home"),
                                                  "SQLITE_TEST_KEY": "offline-fixture", "OCTO_OFFLINE": "1"})
+        fixture_home = self.base / "isolated-home"
+        fixture_home.mkdir(parents=True, exist_ok=True)
+        (fixture_home / "settings.json").write_text('{"memory":{"enabled":false}}', encoding="utf-8")
         self.environment.start()
         self.addCleanup(self.environment.stop)
 
@@ -115,6 +120,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         answer = AssistantMessage(content="stored answer", model="offline", stop_reason="stop")
         provider = FakeProvider([[AssistantDoneEvent(reason="stop", message=answer)]])
         config = CodingSessionConfig(
+            memory_settings=MemorySettings(enabled=False),
             provider=provider, model="offline", storage=manager.storage_for(record),
             session_id=record.id, session_manager=manager, cwd=self.base,
             resource_paths=OctoResourcePaths(root=paths.home, agents_root=paths.agents_home,
@@ -228,6 +234,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
 
         async def open_record(record):
             return await CodingSession.load(CodingSessionConfig(
+                memory_settings=MemorySettings(enabled=False),
                 provider=FakeProvider([]), model="offline", provider_name="fixture",
                 storage=manager.storage_for(record), session_id=record.id, session_manager=manager,
                 cwd=self.base, provider_settings=settings, runtime_provider_config=provider_config,

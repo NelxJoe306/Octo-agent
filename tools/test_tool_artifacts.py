@@ -7,6 +7,8 @@ import re
 from unittest.mock import patch
 import unittest
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.messages import ToolCall
 from octo_agent.session import SQLiteSessionStorage
 from octo_agent.session.topics import TopicRequest
@@ -125,7 +127,7 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
         manager=SessionManager(paths)
         record=manager.create_session(cwd=self.base,model='offline',title='Artifact fixture')
         provider=provider or LimitedProvider(streams)
-        config=CodingSessionConfig(provider=provider,model='offline',storage=manager.storage_for(record),
+        config=CodingSessionConfig(memory_settings=MemorySettings(enabled=False), provider=provider,model='offline',storage=manager.storage_for(record),
             session_id=record.id,session_manager=manager,cwd=self.base,system='Artifact test assistant',tools=tools,
             resource_paths=OctoResourcePaths(root=paths.home,agents_root=paths.agents_home,cwd=self.base,paths=paths),
             context_output_reserve_tokens=512,context_safety_margin=128,auto_compact_enabled=False,

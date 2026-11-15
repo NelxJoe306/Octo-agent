@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import httpx
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.context_budget import (
     ContextBudgetExceeded, ContextBudgetPolicy, estimate_budget_text, evaluate_context_budget,
 )
@@ -246,7 +248,7 @@ class SessionBudgetTests(unittest.IsolatedAsyncioTestCase):
         manager = SessionManager(paths)
         record = manager.create_session(cwd=self.base, model="offline", title="Budget fixture")
         provider = FakeProvider([response("answer")])
-        config = CodingSessionConfig(provider=provider, model="offline", storage=manager.storage_for(record),
+        config = CodingSessionConfig(memory_settings=MemorySettings(enabled=False), provider=provider, model="offline", storage=manager.storage_for(record),
             session_id=record.id, session_manager=manager, cwd=self.base, system="system", tools=[],
             resource_paths=OctoResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=self.base, paths=paths),
             auto_compact_enabled=False, extensions_enabled=False, skills_enabled=False, trust_override="approve", **options)

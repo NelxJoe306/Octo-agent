@@ -46,6 +46,9 @@ class PreparedCodingSession:
             await self.abort()
             raise
         self._state = "adopted"
+        activate = getattr(self.session, "activate_memory", None)
+        if activate is not None:
+            activate()
         return self.session
 
     async def abort(self) -> None:

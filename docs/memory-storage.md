@@ -1,6 +1,6 @@
 # 长期记忆：持久化底座
 
-本切片提供 SQLite 事实库、提炼任务、学习进度和处理收据。尚未接入聊天主循环、后台模型、触发阈值或自动召回。事实的项目/环境适用范围仍待确认；数据库级查询不代表允许把全部事实自动注入任何会话。
+本切片提供 SQLite 事实库、提炼任务、学习进度和处理收据。存储接口已接入独立后台提炼与用户偏好召回，详见 [异步记忆说明](async-memory.md)。事实的项目/环境适用范围仍待确认；数据库级查询不代表允许把全部事实自动注入任何会话。
 
 ## 公开接口
 
@@ -12,7 +12,11 @@
 - `sources(job_id)`：只读取冻结范围内原始 MessageEntry，不把压缩摘要或自定义条目当作证据。返回消息正文、原文时间戳、来源会话/条目 ID，以及请求中冻结的话题 ID 和路径。工具消息保留其实际持久化内容，不自动展开工具产物正文。
 - `apply(lease, operations)`：校验操作及来源，同事务提交事实变化、进度、任务 applied 状态和不可改写收据。空结果同样推进进度。相同令牌及相同操作的重放返回原收据；变更内容或旧令牌重放报冲突。
 - `release(lease, error)`：有效租约的处理者主动释放任务，保留最多 2000 字符错误信息，进度不动。异常退出后无需全局重置，等待租约到期重新领取。
-- `facts(source_session_id=None, include_inactive=False)`：查询有效事实，或显式查看旧版本。来源会话筛选是审计过滤，不是项目适用范围。`receipt(job_id)` 返回原操作和新事实 ID，未提交则为空。
+- `facts(source_session_id=None, include_inactive=False, category=None, limit=None)`：查询有效事实，或显式查看旧版本。来源会话筛选是审计过滤，不是项目适用范围。`receipt(job_id)` 返回原操作和新事实 ID，未提交则为空。
+
+`pending_job(session_id)` 查询未完成任务；`unlearned(session_id, limit=100, through_seq=最大序号)` 从学习进度后读取最多 1000 条原始消息，供编排器选择下一批范围。facts 可按 category 筛选并限制条数，有限查询优先返回最近事实。
+
+`request_flush(session_id)` 持久保存处理到最后一条原始消息的水位，`flush_targets()` 列出尚未完成的水位。已有任务不被改写，完成后可继续入队水位之前的后续范围；进度达到水位后自动不再列出。
 
 ## 事实与证据
 
@@ -32,6 +36,6 @@ pending → claim → running → apply → applied
 
 ## 升级与验证
 
-会话库升级到 schema 5，增加 memory_progress、memory_jobs、memory_facts、memory_receipts；既有会话、话题和工具产物不变。旧程序不支持 schema 5。首次启动前应关闭旧进程并备份 SQLite（或使用 SQLite backup）；JSONL 不导出记忆及工具产物，不能用它替代完整数据库备份。本次开发只迁移临时测试库。
+schema 5 引入 memory_progress、memory_jobs、memory_facts、memory_receipts；当前 schema 6 给 memory_progress 增加 flush_through_seq；既有会话、话题和工具产物不变。旧程序不支持 schema 6。首次启动前应关闭旧进程并备份 SQLite（或使用 SQLite backup）；JSONL 不导出记忆及工具产物，不能用它替代完整数据库备份。本次开发只迁移临时测试库。
 
 运行 `python -m unittest tools.test_memory_storage -q`。测试使用真实临时 SQLite、独立子进程退出和数据库写入故障，覆盖重启、租约竞争、旧令牌拒绝、空结果、幂等重放、批次回滚、原始证据校验和 schema 4 迁移。没有调用真实模型 API。

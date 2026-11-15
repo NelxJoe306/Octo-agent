@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import httpx
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.events import MessageEndEvent, ToolExecutionEndEvent
 from octo_agent.messages import AssistantMessage, UserMessage, ToolCall
 from octo_agent.provider_events import AssistantDoneEvent
@@ -43,7 +45,7 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         manager = SessionManager(paths)
         record = manager.create_session(cwd=self.base, model='offline', title='Offline topic fixture')
         provider = FakeProvider(streams or [[AssistantDoneEvent(reason='stop', message=AssistantMessage(content='answer', model='offline'))]])
-        config = CodingSessionConfig(provider=provider, model='offline', storage=manager.storage_for(record),
+        config = CodingSessionConfig(memory_settings=MemorySettings(enabled=False), provider=provider, model='offline', storage=manager.storage_for(record),
             session_id=record.id, session_manager=manager, cwd=self.base,
             resource_paths=OctoResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=self.base, paths=paths),
             auto_compact_enabled=False, extensions_enabled=False, skills_enabled=False, trust_override='approve')
@@ -250,7 +252,7 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         child = topics.create(parent_id='main', title='after upgrade', anchor_entry_id=original.id)
         topics.select(child)
         with storage.database.connection() as connection:
-            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0],5)
+            self.assertEqual(connection.execute('PRAGMA user_version').fetchone()[0],6)
             self.assertEqual(connection.execute('SELECT body_json FROM session_entries').fetchone()[0], entry_to_json_line(original))
 
     async def test_continuation_uses_own_mainline_and_root_is_distinct(self):

@@ -79,6 +79,52 @@ class MemoryStore:
                 (self.clock(), limit)).fetchall()
             return tuple(self._job(connection, row[0]) for row in rows)
 
+    async def request_flush(self, session_id: str) -> int:
+        return await asyncio.to_thread(self._request_flush, session_id)
+
+    def _request_flush(self, session_id: str) -> int:
+        with self.database.transaction() as connection:
+            target = connection.execute("""SELECT COALESCE(MAX(seq),0) FROM session_entries
+                WHERE session_id=? AND json_extract(body_json,'$.type')='message'""", (session_id,)).fetchone()[0]
+            if target:
+                connection.execute("""INSERT INTO memory_progress(session_id,last_seq,flush_through_seq) VALUES (?,0,?)
+                    ON CONFLICT(session_id) DO UPDATE SET flush_through_seq=MAX(memory_progress.flush_through_seq,excluded.flush_through_seq)""",
+                    (session_id,target))
+            return target
+
+    async def flush_targets(self) -> tuple[tuple[str,int], ...]:
+        return await asyncio.to_thread(self._flush_targets)
+
+    def _flush_targets(self) -> tuple[tuple[str,int], ...]:
+        with self.database.connection() as connection:
+            return tuple(connection.execute("""SELECT session_id,flush_through_seq FROM memory_progress
+                WHERE last_seq<flush_through_seq ORDER BY session_id""").fetchall())
+
+    async def pending_job(self, session_id: str) -> MemoryJob | None:
+        return await asyncio.to_thread(self._pending_job, session_id)
+
+    def _pending_job(self, session_id: str) -> MemoryJob | None:
+        with self.database.connection() as connection:
+            row = connection.execute("SELECT job_id FROM memory_jobs WHERE session_id=? AND state!='applied'", (session_id,)).fetchone()
+            return self._job(connection, row[0]) if row else None
+
+    async def unlearned(self, session_id: str, *, limit: int = 100, through_seq: int = 9223372036854775807) -> tuple[MemorySource, ...]:
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError('limit must be between 1 and 1000')
+        if type(through_seq) is not int or not 0 <= through_seq <= 9223372036854775807:
+            raise ValueError('Invalid memory flush endpoint')
+        return await asyncio.to_thread(self._unlearned, session_id, limit, through_seq)
+
+    def _unlearned(self, session_id: str, limit: int, through_seq: int) -> tuple[MemorySource, ...]:
+        with self.database.connection() as connection:
+            row = connection.execute('SELECT last_seq FROM memory_progress WHERE session_id=?', (session_id,)).fetchone()
+            cursor = row[0] if row else 0
+            rows = connection.execute("""SELECT seq FROM session_entries WHERE session_id=? AND seq>?
+                AND seq<=? AND json_extract(body_json,'$.type')='message' ORDER BY seq LIMIT ?""", (session_id, cursor, through_seq, limit)).fetchall()
+            if not rows:
+                return ()
+            return self._sources(connection, MemoryJob('', session_id, cursor + 1, rows[-1][0], 'pending', 0, None, None))
+
     async def progress(self, session_id: str) -> int:
         return await asyncio.to_thread(self._progress, session_id)
 
@@ -200,14 +246,16 @@ class MemoryStore:
                 WHERE job_id=?""", (error, job.id))
             return self._job(connection, job.id)
 
-    async def facts(self, *, source_session_id: str | None = None, include_inactive: bool = False) -> tuple[MemoryFact, ...]:
-        return await asyncio.to_thread(self._facts, source_session_id, include_inactive)
+    async def facts(self, *, source_session_id: str | None = None, include_inactive: bool = False, category: str | None = None, limit: int | None = None) -> tuple[MemoryFact, ...]:
+        if category not in (None, 'fact', 'preference') or (limit is not None and (type(limit) is not int or not 1 <= limit <= 1000)):
+            raise ValueError('Invalid memory fact query')
+        return await asyncio.to_thread(self._facts, source_session_id, include_inactive, category, limit)
 
-    def _facts(self, session_id: str | None, include_inactive: bool) -> tuple[MemoryFact, ...]:
+    def _facts(self, session_id: str | None, include_inactive: bool, category: str | None, limit: int | None) -> tuple[MemoryFact, ...]:
         with self.database.connection() as connection:
             rows = connection.execute('''SELECT fact_id,text,category,source_refs_json,state,replacement_id FROM memory_facts
-                WHERE (? IS NULL OR source_session_id=?) AND (? OR state='active') ORDER BY created_at,fact_id''',
-                (session_id, session_id, include_inactive)).fetchall()
+                WHERE (? IS NULL OR source_session_id=?) AND (? OR state='active') AND (? IS NULL OR category=?) ORDER BY created_at DESC,fact_id LIMIT ?''',
+                (session_id, session_id, include_inactive, category, category, limit if limit is not None else -1)).fetchall()
         return tuple(MemoryFact(row[0], row[1], row[2], tuple(SourceReference(**{**source, 'topic_path': tuple(source['topic_path'])})
                      for source in json.loads(row[3])), row[4], row[5]) for row in rows)
 

@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from octo_coding.memory_runtime import MemorySettings
+
 from octo_agent.messages import AssistantMessage, UserMessage
 from octo_agent.provider_events import AssistantDoneEvent
 from octo_agent.session import SessionInfoEntry, ModelChangeEntry, MessageEntry
@@ -30,6 +32,8 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.temp.cleanup)
         self.base = Path(self.temp.name)
         self.paths = OctoPaths(home=self.base/'home', agents_home=self.base/'agents')
+        self.paths.home.mkdir(parents=True, exist_ok=True)
+        (self.paths.home/'settings.json').write_text('{"memory":{"enabled":false}}', encoding='utf-8')
         self.manager = SessionManager(self.paths)
         self.settings = ProviderSettings(default_provider='deepseek', providers=(
             OpenAICompatibleProviderConfig(name='deepseek', models=('deepseek-flash',), default_model='deepseek-flash',
@@ -52,7 +56,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         return record, storage, entries
 
     def config(self, record, storage, **options):
-        return CodingSessionConfig(provider=options.pop('provider', None), model='deepseek-flash', provider_name='deepseek', provider_settings=self.settings,
+        return CodingSessionConfig(memory_settings=MemorySettings(enabled=False), provider=options.pop('provider', None), model='deepseek-flash', provider_name='deepseek', provider_settings=self.settings,
             storage=storage, session_id=record.id, session_manager=self.manager, cwd=self.base,
             resource_paths=OctoResourcePaths(root=self.paths.home, agents_root=self.paths.agents_home, cwd=self.base, paths=self.paths),
             system='offline fixture', tools=[], extensions_enabled=False, skills_enabled=False,
