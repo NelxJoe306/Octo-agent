@@ -22,6 +22,12 @@ dependencies = [
     "typer>=0.12",
 ]
 
+# Python tests use the standard-library unittest runner and packages already
+# listed in [project] dependencies (for example httpx and typer). There are
+# no extra test-only Python packages.
+[project.optional-dependencies]
+dev = []
+
 [project.scripts]
 octo = "terminal_app.cli:app"
 

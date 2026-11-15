@@ -47,6 +47,8 @@ $env:OPENAI_API_KEY = "sk-xxx"
 
 Linux / macOS 将 `.\.venv\Scripts\octo.exe` 换成 `./.venv/bin/octo`，将 `.\.venv\Scripts\python.exe` 换成 `./.venv/bin/python`。
 
+仓库根目录的 `octo.py` 是免安装入口，会把 `src/` 临时加入模块搜索路径；这和可编辑安装后的 `octo` 命令都会调用 `terminal_app.cli`，不是两套实现。
+
 ## 环境变量
 
 | 变量名 | 是否必填 | 默认值 | 说明 |

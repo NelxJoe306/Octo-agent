@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          activate-environment: false
+      - name: Install Python dependencies
+        env:
+          UV_PYTHON: "3.12"
+        run: python tools/install_dependencies.py --python-only
+      - name: Run offline smoke tests
+        run: .venv/bin/python tools/verify.py
+      - name: Run unit tests
+        run: .venv/bin/python -m unittest discover -s tests -t . -p "test_*.py" -q
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Web dependencies
+        run: python tools/install_dependencies.py --web-only
+      - name: Test
+        run: npm --prefix web test
+      - name: Typecheck
+        run: npm --prefix web run typecheck
+      - name: Build
+        run: npm --prefix web run build

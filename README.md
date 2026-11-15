@@ -3,6 +3,7 @@
 面向开发者的终端编程 Agent（CLI / TUI）。用话题树管理同一件事的分支讨论，用后台长期记忆跨会话记住稳定偏好。
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![CI](https://github.com/NelxJoe306/Octo-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/NelxJoe306/Octo-agent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **状态：实验性（`v0.1.0`）。** SQLite schema 仍在演进，适合个人与内部使用。
@@ -82,7 +83,7 @@ stateDiagram-v2
 
 后台记忆默认开启，会增加模型调用：大约每满 32 条原始消息（再加上触发词或正常退出）多一次提炼请求。如需关闭，设置 `OCTO_DISABLE_MEMORY=1`，或在 `${OCTO_HOME}/settings.json` 里将 `memory.enabled` 设为 `false`。
 
-**跨会话召回测了什么。** 评测日期 2026-11-15，基线 `bf50f9d`，提炼模型为 `deepseek-flash`。20 个合成样本里，9 条要求新增偏好，1 条要求用新偏好覆盖旧值，10 条要求忽略（一次性要求、引用文本、工具输出、假设性更正等）。项目事实的隔离由仓库既有测试覆盖，不计入这 20 条。每例使用临时空库，按固定原文写入后走生产实现的后台提炼，再在新会话里检查模型输入是否出现对应偏好。三轮按固定顺序串行执行，没有按结果调整提示词或重跑择优。完整口径、逐条证据和复现命令见 [评测交接](eval/memory/评测交接.md)。
+**跨会话召回测了什么。** 评测日期 2026-11-15，基线 `bf50f9d`，提炼模型为 `deepseek-flash`。20 个合成样本里，9 条要求新增偏好，1 条要求用新偏好覆盖旧值，10 条要求忽略（一次性要求、引用文本、工具输出、假设性更正等）。项目事实的隔离由仓库既有测试覆盖，不计入这 20 条。每例使用临时空库，按固定原文写入后，用 `notify(force=True)` 强制触发生产实现的后台提炼；这与默认 32 条消息阈值不同，否则这些短样本凑不够轮数，一次也提炼不出来。再在新会话里检查发给主模型的请求中，是否出现完整的有效偏好记录。判定看的是注入结果，不是向量检索，也不检查模型最终是否遵从偏好。三轮按固定顺序串行执行，没有按结果调整提示词或重跑择优。完整口径、逐条证据和复现命令见 [评测交接](eval/memory/评测交接.md)。
 
 | 指标 | 第一轮 | 第二轮 | 第三轮 |
 | --- | ---: | ---: | ---: |
@@ -106,7 +107,7 @@ stateDiagram-v2
 | `src/terminal_app/` | CLI / TUI、文件与 Shell 工具、Provider 生命周期、本机话题地图接口 | 上述三个模块 |
 | `web/` | 独立构建的 Next.js 话题地图 | 本机 HTTP 接口，不导入 Python 源码 |
 
-依赖方向由 `tests/core/test_module_boundaries.py` 检查：**基础模块严禁反向导入 `terminal_app`。** 更完整的约定见 [docs/module-layout.md](docs/module-layout.md)。
+模块边界由 `tests/core/test_module_boundaries.py` 自动校验：扫描 `src/` 下的 import，基础模块若反向导入 `terminal_app` 或违反依赖方向，测试会失败。更完整的约定见 [docs/module-layout.md](docs/module-layout.md)。
 
 ## 可验证性
 
@@ -125,6 +126,8 @@ stateDiagram-v2
 11. HTML 导出会话仍能渲染
 
 记忆相关的更细验证在 `tests/memory/`：存储事务、租约竞争、幂等重放，以及 `memory.md` 的幂等导出、手改不回流、脱模型重建。这些测试使用临时数据库和假模型，不访问真实 API。样本评测的离线判定回归在 `tests/memory/test_memory_eval.py`，覆盖误写普通事实、后台失败、旧值替代及并存旧值；用真实模型重跑 20 样本三轮需要本机配置，并会产生 API 用量，命令见 [评测交接](eval/memory/评测交接.md)。
+
+Python 测试没有额外的测试专用依赖，只用标准库 `unittest`，再加上已写在 `pyproject.toml` 项目依赖里的包（例如 `httpx`、`typer`）。Web 测试依赖 `web/` 里的 `tsx` 和 `typescript`。上面这些离线命令也会在 GitHub Actions 中于每次推送和 PR 上运行；真实模型评测不进入 CI。
 
 全量检查：
 
@@ -156,6 +159,8 @@ $env:OPENAI_API_KEY = "sk-xxx"
 ```
 
 第 4 步默认模型是 `gpt-5.4`。若使用第三方 OpenAI 兼容接口，请加上 `--base-url` 和 `--model`。Linux / macOS 将 `.\.venv\Scripts\octo.exe` 换成 `./.venv/bin/octo`。常用命令、环境变量和 Web 构建步骤也写在 [docs/install.md](docs/install.md)。
+
+`octo.py` 是为了在未做可编辑安装时直接跑，它会把 `src/` 临时加入模块搜索路径；正式入口仍是安装后的 `octo` 命令。两者都调用 `terminal_app.cli`。
 
 ## 已知限制
 
