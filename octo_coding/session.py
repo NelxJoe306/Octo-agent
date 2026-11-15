@@ -51,7 +51,7 @@ from octo_agent.session.tree import SessionTreeError, path_to_entry
 from octo_agent.tool_history import ToolHistoryRepair, repair_tool_history
 from octo_agent.tools import AgentTool, AgentToolResult
 from octo_agent.session.artifacts import ToolArtifactStore
-from octo_coding.artifacts import ArtifactTools
+from octo_coding.artifacts import ArtifactTools, READ_ARTIFACT_TOOL
 from octo_agent.types import JSONValue
 from octo_ai.model_catalog import ModelCatalogProvider, RuntimeModel, RuntimeModelCatalog
 from octo_ai.model_limits import ConfigurableRequestBudgetProvider, ModelLimitsProvider, RequestBudgetProvider, RuntimeModelLimits
@@ -700,7 +700,7 @@ class CodingSession:
         artifacts = ArtifactTools(ToolArtifactStore(config.storage)) if isinstance(config.storage, SQLiteSessionStorage) else None
         if artifacts is not None:
             base_tools = artifacts.include_read_tool(base_tools)
-        tools = extension_runtime.compose_tools(base_tools)
+        tools = extension_runtime.compose_tools(base_tools, reserved_tool_names=(READ_ARTIFACT_TOOL,) if artifacts else ())
         system = (
             config.system
             if config.system is not None
@@ -2601,7 +2601,7 @@ class CodingSession:
         )
         if self._artifacts is not None:
             base_tools = self._artifacts.include_read_tool(base_tools)
-        staged_tools = staged_runtime.compose_tools(base_tools)
+        staged_tools = staged_runtime.compose_tools(base_tools, reserved_tool_names=(READ_ARTIFACT_TOOL,) if self._artifacts else ())
         staged_commands = self._config.command_registry or staged_runtime.build_command_registry()
         after_system_prompt_inputs = _system_prompt_resource_signatures(
             skills=resources.skills,
