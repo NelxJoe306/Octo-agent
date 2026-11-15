@@ -31,7 +31,7 @@ class SQLiteSessionDatabase:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3, 4):
+            if version not in (0, 1, 2, 3, 4, 5):
                 raise RuntimeError(f"Unsupported session database version: {version}")
             if version == 0:
                 connection.execute("BEGIN IMMEDIATE")
@@ -109,6 +109,38 @@ class SQLiteSessionDatabase:
                     connection.execute("""CREATE TRIGGER IF NOT EXISTS artifacts_no_delete BEFORE DELETE ON tool_artifacts
                         BEGIN SELECT RAISE(ABORT, 'Tool artifacts are immutable'); END""")
                     connection.execute("PRAGMA user_version = 4")
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+            if version < 5:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute("""CREATE TABLE IF NOT EXISTS memory_progress (
+                        session_id TEXT PRIMARY KEY REFERENCES sessions(session_id), last_seq INTEGER NOT NULL)""")
+                    connection.execute("""CREATE TABLE IF NOT EXISTS memory_jobs (
+                        job_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id),
+                        start_seq INTEGER NOT NULL, end_seq INTEGER NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('pending','running','applied')),
+                        lease_token TEXT, lease_until REAL, attempts INTEGER NOT NULL, last_error TEXT,
+                        created_at REAL NOT NULL, UNIQUE(session_id,end_seq))""")
+                    connection.execute("""CREATE UNIQUE INDEX IF NOT EXISTS memory_one_open_job
+                        ON memory_jobs(session_id) WHERE state!='applied'""")
+                    connection.execute("""CREATE TABLE IF NOT EXISTS memory_facts (
+                        fact_id TEXT PRIMARY KEY, text TEXT NOT NULL, category TEXT NOT NULL,
+                        source_session_id TEXT NOT NULL REFERENCES sessions(session_id), source_refs_json TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN ('active','superseded','retracted')),
+                        replacement_id TEXT REFERENCES memory_facts(fact_id),
+                        job_id TEXT NOT NULL REFERENCES memory_jobs(job_id), created_at REAL NOT NULL)""")
+                    connection.execute("""CREATE TABLE IF NOT EXISTS memory_receipts (
+                        job_id TEXT PRIMARY KEY REFERENCES memory_jobs(job_id), lease_token TEXT NOT NULL,
+                        payload_hash TEXT NOT NULL, operations_json TEXT NOT NULL,
+                        fact_ids_json TEXT NOT NULL, applied_at REAL NOT NULL)""")
+                    connection.execute("""CREATE TRIGGER IF NOT EXISTS memory_receipts_no_update BEFORE UPDATE ON memory_receipts
+                        BEGIN SELECT RAISE(ABORT, 'Memory receipts are immutable'); END""")
+                    connection.execute("""CREATE TRIGGER IF NOT EXISTS memory_receipts_no_delete BEFORE DELETE ON memory_receipts
+                        BEGIN SELECT RAISE(ABORT, 'Memory receipts are immutable'); END""")
+                    connection.execute("PRAGMA user_version = 5")
                     connection.commit()
                 except BaseException:
                     connection.rollback()
