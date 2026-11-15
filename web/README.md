@@ -59,15 +59,15 @@ Python 检查使用临时目录与假模型：
 
 ```powershell
 cd D:\Octo
-.\.venv\Scripts\python.exe -B -m unittest discover -s tools -p test_topics.py -v
+.\.venv\Scripts\python.exe -B -m unittest tests.sessions.test_topics -v
 ```
 
 ## 实现位置
 
-- `octo_agent/session/topics.py`：话题操作、稳定消息定位、请求与消息原子归属。
-- `octo_coding/session.py`：冻结请求、排队归属、话题 reminder 与事件。
-- `octo_coding/topic_web.py`：附着现有会话的本机 HTTP/SSE 接口。
-- `octo_coding/tui/app.py`：话题状态提示、`/topic` 和 `/map`。
+- `src/octo_agent/session/topics.py`：话题操作、稳定消息定位、请求与消息原子归属。
+- `src/octo_coding/session.py`：冻结请求、排队归属、话题 reminder 与事件。
+- `src/octo_coding/topic_web.py`：附着现有会话的本机 HTTP/SSE 接口。
+- `src/octo_coding/tui/app.py`：话题状态提示、`/topic` 和 `/map`。
 - `web/app/page.tsx`、`web/lib/topic-map.ts`：视图与响应校验。
 - `web/styles/tokens.css`、`web/app/globals.css`：主题、布局与动态状态。
 

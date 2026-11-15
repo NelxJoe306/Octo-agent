@@ -46,7 +46,7 @@ Octo 是个人编程与系统运维助手。一个主 Agent 处理共享会话�
 
 ### 实现与验收
 
-实现位置：`octo_agent/session/topics.py`、`octo_coding/session.py`、`octo_coding/topic_web.py`。模型输入中的话题信息取当前请求冻结的归属，不读取生成过程中变化的 UI 焦点。
+实现位置：`src/octo_agent/session/topics.py`、`src/octo_coding/session.py`、`src/octo_coding/topic_web.py`。模型输入中的话题信息取当前请求冻结的归属，不读取生成过程中变化的 UI 焦点。
 
 验收：发送到 A 后切到 B，结果归属保持 A；从旧消息建立子话题不改变旧消息归属；纯导航不触发模型请求。
 
@@ -67,7 +67,7 @@ Octo 是个人编程与系统运维助手。一个主 Agent 处理共享会话�
 
 ### 当前实现：SQLite 会话存储已接入
 
-`octo_agent/session/sqlite.py` 提供 `SQLiteSessionDatabase` 与 `SQLiteSessionStorage`，使用 Python 标准库 sqlite3。数据库路径由 `OctoPaths.database_path` 统一给出，使用 WAL、外键和 schema 版本检查。连接按操作创建与关闭；批量写入使用 `BEGIN IMMEDIATE`，异常整批回滚。
+`src/octo_agent/session/sqlite.py` 提供 `SQLiteSessionDatabase` 与 `SQLiteSessionStorage`，使用 Python 标准库 sqlite3。数据库路径由 `OctoPaths.database_path` 统一给出，使用 WAL、外键和 schema 版本检查。连接按操作创建与关闭；批量写入使用 `BEGIN IMMEDIATE`，异常整批回滚。
 
 当前 schema：
 
@@ -93,9 +93,9 @@ RPC `sessionFile` 对 SQLite 返回 `数据库绝对路径#session=会话ID`，�
 
 已完成会话日志与目录、旧历史导入/导出、话题与请求归属、原子压缩记录及 schema 4 工具产物。schema 6 已包含长期记忆事实、提炼任务、学习进度、收据及待处理水位；后台模型、自动入队和有界偏好召回已接入。JSONL 不携带话题表或工具产物 BLOB。
 
-`octo_agent/session/memory.py` 仍按旧协议恢复 active leaf 与压缩条目；导入旧分支不会自动生成 v1 话题。未来共享话题历史的投影在 context harness / 话题模块实现，当前存储保留完整原记录供其使用。
+`src/octo_agent/session/memory.py` 仍按旧协议恢复 active leaf 与压缩条目；导入旧分支不会自动生成 v1 话题。未来共享话题历史的投影在 context harness / 话题模块实现，当前存储保留完整原记录供其使用。
 
-`tools/test_sqlite_storage.py` 共 12 项：重启恢复与会话隔离、稳定 ID 回读、幂等重试/冲突回滚、受管会话目录恢复、新会话不写 JSONL、重复导入及源文件保留、真实对话持久化/新建/重命名/导出、12 个并发批次、损坏输入无部分导入、导出源保护、首次消息与目录原子性、旧索引错误隔离、真实 RPC 会话定位及 HTML 下载命名。其中相关行为合并在同一项端到端测试验证。
+`tests/storage/test_sqlite_storage.py` 共 12 项：重启恢复与会话隔离、稳定 ID 回读、幂等重试/冲突回滚、受管会话目录恢复、新会话不写 JSONL、重复导入及源文件保留、真实对话持久化/新建/重命名/导出、12 个并发批次、损坏输入无部分导入、导出源保护、首次消息与目录原子性、旧索引错误隔离、真实 RPC 会话定位及 HTML 下载命名。其中相关行为合并在同一项端到端测试验证。
 
 验证：12 项存储测试 + 5 项 harness 测试 + 11 项原有离线检查全部通过，`git diff --check` 通过。所有数据夹具使用临时目录；本轮没有运行真实用户历史批量迁移。
 
@@ -116,9 +116,9 @@ CodingSession
   → ModelProvider.stream_response
 ```
 
-源码依据：`octo_agent/loop.py`、`octo_agent/harness.py`、`octo_agent/provider.py`。
+源码依据：`src/octo_agent/loop.py`、`src/octo_agent/harness.py`、`src/octo_agent/provider.py`。
 
-**已实现首个切片**：在 `run_agent_loop` 调用 `_assistant_events` 之前增加可等待的 `prepare_context` 接口，由 `AgentHarnessConfig` 注入，首轮及每个工具批次后的下一轮均经过它。准备逻辑集中在 `octo_agent/context_harness.py`。当前 SQLite `CodingSession` 已装配话题动态信息投影；2026-11-14 已追加完整预算软硬门控、压缩消费与最小恢复闭环，用户偏好在每次请求开始时读取固定快照并计入预算。
+**已实现首个切片**：在 `run_agent_loop` 调用 `_assistant_events` 之前增加可等待的 `prepare_context` 接口，由 `AgentHarnessConfig` 注入，首轮及每个工具批次后的下一轮均经过它。准备逻辑集中在 `src/octo_agent/context_harness.py`。当前 SQLite `CodingSession` 已装配话题动态信息投影；2026-11-14 已追加完整预算软硬门控、压缩消费与最小恢复闭环，用户偏好在每次请求开始时读取固定快照并计入预算。
 
 现有 `replace_messages()` 会重新绑定列表，运行中循环仍持有原列表，因此不能仅在 `turn_end` 监听器里调用它来替换下一轮输入。事件通知适合记录与入队，不能作为隐含的上下文替换机制。
 
@@ -201,7 +201,7 @@ flowchart TD
 
 ### 5.5 预算与软硬门控（2026-11-14 已实现）
 
-本切片负责计算、判断、拦截和诊断。`octo_agent/context_budget.py` 集中维护纯计算策略、完整输入估算和决策；`AgentHarnessConfig.check_context` 由 `CodingSession` 装配，在准备完成且工具链校验通过后、每个主推理请求之前执行。首轮、工具批次后的下一轮、steering、follow-up 与 continue 均走同一入口。
+本切片负责计算、判断、拦截和诊断。`src/octo_agent/context_budget.py` 集中维护纯计算策略、完整输入估算和决策；`AgentHarnessConfig.check_context` 由 `CodingSession` 装配，在准备完成且工具链校验通过后、每个主推理请求之前执行。首轮、工具批次后的下一轮、steering、follow-up 与 continue 均走同一入口。
 
 ```text
 原始历史 → prepare_context → 工具链校验 → check_context → provider
@@ -216,7 +216,7 @@ soft_limit = min(floor(W * 0.80), hard_input_limit)
 
 三个决策：输入低于软水位为 `ALLOW`；达到软水位且不超过硬上限为 `NEEDS_COMPACTION`，本轮继续；超过硬上限为 `BLOCK`，抛出 `ContextBudgetExceeded`，不会调用本次 provider。恰好等于硬上限允许发送。开启自动压缩时，软信号由同一主循环调用恢复接口，尝试一次摘要；硬超限则要求缩减后重新校验预算。旧的请求前后自动压缩与会话级 overflow 重试路径已移除。手动 `/compact` 复用完整块选择和原子记录。关闭自动压缩时保留预算拦截，不自动摘要或裁剪。
 
-输出限额通过 `octo_ai/model_limits.py` 的 `RequestBudgetProvider.request_token_budget()` 读取，与适配器构造实际请求使用同一个值。`ConfigurableRequestBudgetProvider.configure_request_budget()` 在主调用前将有效窗口、余量和显式覆盖应用到真实请求配置。标准静态/动态工厂分别传递模型窗口与模型输出最大值，不把能力上限当成本次输出目标。
+输出限额通过 `src/octo_ai/model_limits.py` 的 `RequestBudgetProvider.request_token_budget()` 读取，与适配器构造实际请求使用同一个值。`ConfigurableRequestBudgetProvider.configure_request_budget()` 在主调用前将有效窗口、余量和显式覆盖应用到真实请求配置。标准静态/动态工厂分别传递模型窗口与模型输出最大值，不把能力上限当成本次输出目标。
 
 OpenAI Chat、Responses、Google、Mistral 未显式指定输出上限时，取 `min(16384, 模型输出最大值（已知时）, max(1, W // 4), max(1, W - M - 1))`；W 同时受会话有效窗口与适配器已知窗口约束。例：8192 窗口、8192 输出能力、安全余量 1024，默认请求输出为 2048，硬输入上限为 5120。该比例是保留输入空间的默认策略，可以显式覆盖，不是模型能力声明。`context_output_reserve_tokens` 对这些原生适配器会同时覆盖真实请求参数和预留；超出模型能力的覆盖明确报错，覆盖耗尽输入容量则生成 `BLOCK`。缺少窗口信息的直接适配器调用仍回退 16384，实际 `CodingSession` 调用前会按解析到的窗口重新计算。
 
@@ -232,15 +232,15 @@ Codex 原有传输不发送输出上限，本阶段不添加不受支持的字�
 
 门控自身不改写历史；恢复接口只追加压缩记录与失败状态。用户输入和工具结果仍按原流程保存，SQLite 原文与话题归属不被重写。运行中的 harness 保留消息链，下一次模型调用从持久状态重建压缩视图。循环退出并完成消息落盘后，若没有待重试写入，再将 `harness.messages` 同步为持久压缩视图，使 `session.messages` 无需 reload 也保持一致；不在运行中替换循环持有的列表。调整限额后可以通过 continue 恢复，换会话时回调重新绑定到当前 `CodingSession`。单次输入快照调试开关仅为后续预留，本阶段没有实现。
 
-验收使用 `tools/test_context_budget.py` 的假 provider、真实 SQLite 临时库和 `httpx.MockTransport`：验证软水位允许发送、硬上限等值允许/超出拦截、准备后提醒计入预算、完整输入组成、工具大结果后拦截、steering/follow-up、取消、恢复、有效窗口、输出参数与预留一致、状态查看、会话替换和持久化归属。新增 `tools/test_small_window_budget.py` 覆盖固定小窗口配置的真实标准工厂、显式覆盖和错误诊断，以及 Chat/Responses/Google/Mistral 的 56 组窗口/覆盖组合、窗口缩小、动态工厂和 Anthropic 思考预算。所有请求均由 MockTransport 接收。本阶段没有调用真实模型 API，也没有新增依赖。
+验收使用 `tests/core/test_context_budget.py` 的假 provider、真实 SQLite 临时库和 `httpx.MockTransport`：验证软水位允许发送、硬上限等值允许/超出拦截、准备后提醒计入预算、完整输入组成、工具大结果后拦截、steering/follow-up、取消、恢复、有效窗口、输出参数与预留一致、状态查看、会话替换和持久化归属。新增 `tests/providers/test_small_window_budget.py` 覆盖固定小窗口配置的真实标准工厂、显式覆盖和错误诊断，以及 Chat/Responses/Google/Mistral 的 56 组窗口/覆盖组合、窗口缩小、动态工厂和 Anthropic 思考预算。所有请求均由 MockTransport 接收。本阶段没有调用真实模型 API，也没有新增依赖。
 
 ## 6. 长内容外置与会话压缩
 
 ### 已实现：压缩接入与最小恢复
 
-`octo_agent/context_recovery.py` 定义恢复接口及结果。`run_agent_loop` 在准备和校验工具链后计算完整预算；达到软水位或硬超限时，调用 `CodingSession._recover_context`。恢复结果为已改变视图时，循环重新准备、校验和估算，最终仍超硬上限就停止。摘要调用不经过主循环，不会递归触发自动压缩，但摘要请求自身也要通过输入预算检查。
+`src/octo_agent/context_recovery.py` 定义恢复接口及结果。`run_agent_loop` 在准备和校验工具链后计算完整预算；达到软水位或硬超限时，调用 `CodingSession._recover_context`。恢复结果为已改变视图时，循环重新准备、校验和估算，最终仍超硬上限就停止。摘要调用不经过主循环，不会递归触发自动压缩，但摘要请求自身也要通过输入预算检查。
 
-`octo_coding/compaction.py` 选择完整块。旧轮次按用户消息归组，assistant 的整组工具调用与结果不可拆开。自动恢复和手动 `/compact` 共用 `_protected_round_ids`，保护最新用户消息及其后所有上下文消息，包括本轮 assistant 和完整工具调用结果。本轮已结算的工具批次也不能被摘要或裁剪，只能选择保护区之前的旧块。未结算或错配的工具链直接拒绝。当前完整轮次、system、工具 schema 和动态提醒已超硬上限时，不尝试无效摘要、不改写视图，并明确拦截请求。
+`src/octo_coding/compaction.py` 选择完整块。旧轮次按用户消息归组，assistant 的整组工具调用与结果不可拆开。自动恢复和手动 `/compact` 共用 `_protected_round_ids`，保护最新用户消息及其后所有上下文消息，包括本轮 assistant 和完整工具调用结果。本轮已结算的工具批次也不能被摘要或裁剪，只能选择保护区之前的旧块。未结算或错配的工具链直接拒绝。当前完整轮次、system、工具 schema 和动态提醒已超硬上限时，不尝试无效摘要、不改写视图，并明确拦截请求。
 
 自动压缩以 `floor(min(soft_input_limit, hard_input_limit) × 0.75)` 为缩减目标，选择最旧的非保护块。块边界和受保护内容可能使目标无法达到，实际发送仍以最终预算为准。手动 `/compact` 使用同一选择器，保留最新一轮；近期保留目标为 `min(20000, hard_input_limit // 2)`。小窗口不会再要求固定保留两万 token。
 
@@ -268,7 +268,7 @@ SQLite 会话中的大文本工具结果先持久化到 tool_artifacts，再生�
 
 ### 验收
 
-`tools/test_context_compaction.py` 使用假 provider、真实临时 SQLite 和可控的取消时序。覆盖工具返回后压缩并继续、重开恢复、三次失败降级、一次 overflow 重试、事务回滚、提交后取消、当前输入保护、完整工具批次、限流错误、摘要膨胀、摘要请求超窗、head 冲突、手动压缩、分支排队归属、失败计数重置、新会话和中断调用恢复。未调用真实模型 API。
+`tests/core/test_context_compaction.py` 使用假 provider、真实临时 SQLite 和可控的取消时序。覆盖工具返回后压缩并继续、重开恢复、三次失败降级、一次 overflow 重试、事务回滚、提交后取消、当前输入保护、完整工具批次、限流错误、摘要膨胀、摘要请求超窗、head 冲突、手动压缩、分支排队归属、失败计数重置、新会话和中断调用恢复。未调用真实模型 API。
 
 ## 7. 长期记忆
 
@@ -286,7 +286,7 @@ SQLite 会话中的大文本工具结果先持久化到 tool_artifacts，再生�
 
 事实适用范围尚待用户确认。建议给事实注明项目、对象及必要环境/版本，例如测试环境 3.12 与生产环境 3.11 可以并存；不能把此建议写成已通过的字段设计。
 
-实现位置：`octo_agent/memory/`。SQLite schema 6 已保存 add/supersede/retract 事实及原始证据、提炼任务、学习进度和 applied 收据；事实变化/进度/收据同事务提交。任务按会话冻结不重叠范围，使用到期租约与令牌拒绝旧处理者写入，支持重启发现、失败释放和空结果推进。详细接口与恢复语义见 `docs/memory-storage.md`。
+实现位置：`src/octo_memory/`。SQLite schema 6 已保存 add/supersede/retract 事实及原始证据、提炼任务、学习进度和 applied 收据；事实变化/进度/收据同事务提交。任务按会话冻结不重叠范围，使用到期租约与令牌拒绝旧处理者写入，支持重启发现、失败释放和空结果推进。详细接口与恢复语义见 `docs/memory-storage.md`。
 
 2026-11-15 用户确认：默认复用当前模型独立后台调用；跨会话先只自动召回用户偏好。已接入聊天生命周期，默认累计 32 条原始消息触发（可配置），明确记忆词及正常退出先保存尾部待处理水位；前一个任务完成后按序入队，任务落盘后才提炼。每次请求冻结有界偏好快照，进入主预算，工具循环不逐轮刷新。通用事实仍仅保存来源，不定义项目/环境适用范围，也不自动跨会话注入。实现与设置详见 docs/async-memory.md。
 
@@ -302,11 +302,11 @@ SQLite 会话中的大文本工具结果先持久化到 tool_artifacts，再生�
 
 ## 10. Skill 发现、加载与界面记录
 
-现有实现：`octo_coding/skills.py` 发现并读取 `SKILL.md`；`system_prompt.py` 默认注入名称、描述和位置索引，提示模型读取全文；显式 `/skill:name` 可展开正文。不能把现状写成默认注入全部 Skill 正文。
+现有实现：`src/octo_coding/skills.py` 发现并读取 `SKILL.md`；`system_prompt.py` 默认注入名称、描述和位置索引，提示模型读取全文；显式 `/skill:name` 可展开正文。不能把现状写成默认注入全部 Skill 正文。
 
 目标设计：正文按需加载，用户可启用和 pin，记录每请求实际加载、来源、原因和估算成本。回读原文等是可调用工具能力，可在 Skill 库展示相应使用说明；Skill 文本本身不能替代工具实现。
 
-目标位置：`octo_coding/skills_runtime.py`，尚未建立。`load_skill` 与模型直接读 Skill 文件的实际注入应能被统一追踪；跨请求 pin 需避免重复正文无限累积。
+目标位置：`src/octo_coding/skills_runtime.py`，尚未建立。`load_skill` 与模型直接读 Skill 文件的实际注入应能被统一追踪；跨请求 pin 需避免重复正文无限累积。
 
 验收：库中存在不等于本轮加载；加载 trace 与实际输入一致；正文和索引成本明确标为估算。
 
@@ -344,8 +344,8 @@ SQLite schema 2 增加 topics、topic_selection、topic_requests、entry_request
 | 日期 | 范围 | 已发生的改动 | 验证与提交状态 |
 | --- | --- | --- | --- |
 | 2026-11-12 | 设计记录 | 建立本文，整理各部分方案、状态及 harness 接入草案；纳入 SQLite 权威来源和阈值记忆触发的已确认修订 | 仅文档；源码未改；未 commit |
-| 2026-11-12 | harness 调用前接口 | 新增 `octo_agent/context_harness.py`；在 `loop.py` 和 `harness.py` 接入可选异步准备；隔离消息副本、检查取消并拒绝错误工具链 | `python -B -m unittest discover -s tools -p test_context_harness.py -v`：5 项通过；`python -B tools/verify.py`：11 项通过；`git diff --check` 通过；用户已授权以独立分支 PR 交付 |
-| 2026-11-12 | SQLite 会话存储 | 新增 `octo_agent/session/sqlite.py`；接入目录、CLI/TUI/RPC 与新建/恢复；原子导入、稳定 ID 重试、只增日志和导出源保护 | 12 项存储 + 5 项 harness + 11 项原有检查通过；用户已授权以新的独立 PR 交付 |
+| 2026-11-12 | harness 调用前接口 | 新增 `src/octo_agent/context_harness.py`；在 `loop.py` 和 `harness.py` 接入可选异步准备；隔离消息副本、检查取消并拒绝错误工具链 | `python -B -m unittest discover -s tools -p test_context_harness.py -v`：5 项通过；`python -B tools/verify.py`：11 项通过；`git diff --check` 通过；用户已授权以独立分支 PR 交付 |
+| 2026-11-12 | SQLite 会话存储 | 新增 `src/octo_agent/session/sqlite.py`；接入目录、CLI/TUI/RPC 与新建/恢复；原子导入、稳定 ID 重试、只增日志和导出源保护 | 12 项存储 + 5 项 harness + 11 项原有检查通过；用户已授权以新的独立 PR 交付 |
 
 存储双轴审查：Standards 的导出名称与实际路径混用建议已处理，统一命名函数并显式携带会话 ID；Spec 复现的首次目录/消息提交窗口、损坏旧索引阻断 SQLite、RPC 共享路径选错会话均已修复并补公开入口回归。Spec 对三处修复复核无未解决发现。存储实现基线包含原有 `/tree` 删除，本轮只在相关文件加入存储接线，未覆盖既有改动。
 
@@ -428,3 +428,10 @@ SQLite 会话常驻 read_artifact，默认读取 2048 字节，上限 4096，按
 
 
 审查修复：schema 6 给学习进度增加 flush_through_seq，持久记录阈值/明确请求/正常退出要求处理到的位置。已有任务运行时也不会丢掉后续尾部，不同会话的 worker 可发现并接续。新建会话先准备，只有采用成功才 activate_memory；取消准备不提炼。独立模型请求按原生输出上限、上下文上限和额外系统输入计预算。schema 5 迁移保留已有事实、进度和收据；首次运行前备份数据库。
+
+
+### 2026-11-15：模块分类与可读记忆镜像
+
+Python 迁入 src 布局：octo_agent 负责核心协议/会话基础，octo_ai 负责模型适配，octo_memory 集中事实存储/后台/导出，octo_coding 保留终端与应用适配。记忆设置加载改为显式 Path，去掉对终端路径模块的反向依赖，并以导入方向测试约束。测试按职责迁入 tests，tools 只保留维护入口，Web 测试独立到 web/tests。安装包集中在 dependencies，原工具路径用本地目录链接保留。
+
+用户取消角色提示词迁移，身份/职责/风格保持原系统提示词；仓库 AGENTS.md 原样保留。SQLite 仍为记忆权威，memory.md 只做 DB→Markdown 镜像，启动/提交后更新，导出失败与事实提交解耦。无新 schema，不增加 TTL 或手工导入。详见 docs/module-layout.md、docs/memory-mirror.md。

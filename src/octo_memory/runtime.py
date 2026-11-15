@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from octo_agent.context_budget import estimate_budget_text
 from octo_memory import MemoryConflict, MemoryFact, MemoryJob, MemoryOperation, MemorySource, MemoryStore
+from octo_memory.mirror import MemoryMirror
 
 
 class MemorySettings(BaseModel):
@@ -56,7 +57,9 @@ def fact_data(fact: MemoryFact) -> dict:
 
 class MemoryRuntime:
     def __init__(self, store: MemoryStore, session_id: str, extractor: MemoryExtractor, settings: MemorySettings,
-                 *, source_budget: Callable[[], int] = lambda: 8000) -> None:
+                 *, source_budget: Callable[[], int] = lambda: 8000, mirror: MemoryMirror | None = None) -> None:
+        self.mirror = mirror
+        self.last_export_error: str | None = None
         self.store = store
         self.session_id = session_id
         self.extractor = extractor
@@ -84,8 +87,18 @@ class MemoryRuntime:
     async def wait_idle(self) -> None:
         await self._idle.wait()
 
+    async def _refresh_mirror(self) -> None:
+        if self.mirror is None:
+            return
+        try:
+            await self.mirror.export()
+            self.last_export_error = None
+        except Exception as exc:
+            self.last_export_error = f'{type(exc).__name__}: {exc}'[:2000]
+
     async def _run(self) -> None:
         try:
+            await self._refresh_mirror()
             while not self._closed:
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self._wake.wait(), 30)
@@ -167,6 +180,7 @@ class MemoryRuntime:
             self.last_error = None
             self._failures.pop(job.id, None)
             self._retry_at.pop(job.id, None)
+            await self._refresh_mirror()
         except asyncio.CancelledError:
             if lease is not None:
                 with suppress(Exception):

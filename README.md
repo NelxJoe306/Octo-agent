@@ -16,9 +16,8 @@ uv run octo --print "查看当前项目结构"
 也可以安装到独立虚拟环境：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\octo.exe --help
+python tools/install_dependencies.py --python-only
+.\dependencies\python\.venv\Scripts\octo.exe --help
 ```
 
 ## 配置
@@ -35,9 +34,19 @@ uv run octo providers
 
 ## 代码结构
 
-- `octo_agent/`：消息协议、Agent 循环、工具调用与会话存储。
-- `octo_ai/`：模型协议适配、流式响应与网络处理。
-- `octo_coding/`：编程工具、会话管理、CLI、TUI 和扩展。
+```text
+src/
+  octo_agent/    # 消息协议、主循环、上下文与基础会话存储
+  octo_ai/       # 模型适配器
+  octo_memory/   # 记忆事实、任务、后台提炼、Markdown 镜像
+  octo_coding/   # 终端应用、工具与界面适配
+tests/          # core / providers / storage / memory / sessions
+web/            # 独立 Web 窗口；测试在 web/tests/
+tools/          # 验证、依赖安装和镜像重建入口
+dependencies/   # Python 虚拟环境与 Web 安装包，不进 Git
+```
+
+安装器需要 uv；完整安装（含 Web）运行 `python tools/install_dependencies.py`。依赖声明仍在 pyproject.toml 和 web/package.json/package-lock.json，dependencies/web 中的清单是安装时生成的副本。`.venv` 与 `web/node_modules` 是兼容目录链接；源码不放在这些目录。详细分层与命令见 [目录与模块约定](docs/module-layout.md)。
 
 
 ## 话题地图
@@ -60,13 +69,19 @@ SQLite 会话中的大段文本工具结果会保存为持久产物，模型收�
 
 已提供事实新增/更正/撤回、持久提炼任务、原始证据引用，以及事实/学习进度/收据原子提交。已接入独立后台提炼：默认复用当前模型，累计 32 条消息、明确记忆请求和正常关闭尾部时触发。跨会话先只自动召回用户偏好，主聊天不等待提炼。会增加模型调用量；可在本机 settings.json 的 memory.enabled 关闭，或用 OCTO_DISABLE_MEMORY=1 临时关闭。配置、恢复与模型能力边界见 [异步记忆说明](docs/async-memory.md)，存储接口见 [记忆存储说明](docs/memory-storage.md)。
 
+## memory.md 可读镜像
+
+SQLite 是长期记忆的唯一权威。启用记忆时，后台启动和提交后生成 `${OCTO_HOME}/memory.md`（默认用户目录 `.octo/memory.md`），按偏好、其他事实和折叠历史分节，带 ID、来源日期与消息身份。导出单向、幂等，文件损坏或滞后可以重建；修改 Markdown 不会写回数据库，也不会被模型当成记忆读取。
+
+无需调用模型即可手动重建：`python tools/export_memory.py --home <Octo状态目录>`。该命令需使用项目环境；目录中必须已有 octo.db。镜像和依赖安装包均不进 Git。
+
 ## 离线验证
 
 安装依赖后运行：
 
 ```powershell
 python tools\verify.py
-python -m unittest discover -s tools -p 'test_*.py' -q
+python -m unittest discover -s tests -t . -p 'test_*.py' -q
 ```
 
 验证使用临时目录与本地假模型，不需要真实 API Key，也不访问真实用户会话。原有会话测试和基础检查的夹具显式关闭后台记忆，CLI 测试使用临时本机设置关闭；记忆功能测试则显式启用，包含本地模拟中转站验收。以上命令不需要预先设置 OCTO_DISABLE_MEMORY。

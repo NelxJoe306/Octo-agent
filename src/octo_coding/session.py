@@ -51,6 +51,7 @@ from octo_agent.session.tree import SessionTreeError, path_to_entry
 from octo_agent.tool_history import ToolHistoryRepair, repair_tool_history
 from octo_agent.tools import AgentTool, AgentToolResult
 from octo_memory import MemoryStore
+from octo_memory.mirror import MemoryMirror
 from octo_memory.runtime import MemoryRuntime, MemorySettings, MemoryExtractor, explicit_memory_request, load_memory_settings
 from octo_agent.session.artifacts import ToolArtifactStore
 from octo_coding.artifacts import ArtifactTools, READ_ARTIFACT_TOOL
@@ -495,9 +496,11 @@ class CodingSession:
         settings = self._config.memory_settings or load_memory_settings((self._resource_paths.paths or OctoPaths()).home / 'settings.json')
         if not settings.enabled:
             return None
-        return MemoryRuntime(MemoryStore(self._config.storage.database), self._config.storage.session_id,
+        store = MemoryStore(self._config.storage.database)
+        home = (self._resource_paths.paths or OctoPaths()).home
+        return MemoryRuntime(store, self._config.storage.session_id,
                              self._config.memory_extractor or self._extract_memory, settings,
-                             source_budget=self._memory_source_budget)
+                             source_budget=self._memory_source_budget, mirror=MemoryMirror(store, home / 'memory.md'))
 
     def activate_memory(self) -> None:
         self._memory_activated = True
@@ -513,7 +516,11 @@ class CodingSession:
             return 'disabled'
         if not self._memory_activated:
             return 'waiting for session adoption'
-        return ('background error: ' + self._memory.last_error) if self._memory.last_error else 'enabled (background; preference recall only)'
+        if self._memory.last_error:
+            return 'background error: ' + self._memory.last_error
+        if self._memory.last_export_error:
+            return 'enabled; memory.md export error: ' + self._memory.last_export_error
+        return 'enabled (background; preference recall only)'
 
     async def flush_memory(self) -> None:
         if self._memory is not None and self._memory_activated:

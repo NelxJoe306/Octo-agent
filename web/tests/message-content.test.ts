@@ -45,7 +45,7 @@ test("untrusted HTML, links, and invalid formulas cannot execute or break render
 });
 
 test("normalization preserves multiline code spans, unclosed fences and escaped delimiters", async () => {
-  const { normalizeMath } = await import("./normalize-math");
+  const { normalizeMath } = await import("../lib/normalize-math");
   for (const code of [
     "`line one\n" + String.raw`\(x\)` + "`",
     "~~~~\n" + String.raw`\[x\]` + "\n",
