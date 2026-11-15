@@ -929,12 +929,16 @@ class ExtensionRuntime:
 
 
     # 只包装工具执行器，保留工具名称与 Schema，权限钩子不会改变工具定义。
-    def compose_tools(self, builtin_tools: Sequence[AgentTool]) -> list[AgentTool]:
+    def compose_tools(self, builtin_tools: Sequence[AgentTool], *, reserved_tool_names: Sequence[str] = ()) -> list[AgentTool]:
 
         merged: list[AgentTool] = []
         extension_tools = dict(self._tools)
         for tool in builtin_tools:
             override = extension_tools.pop(tool.name, None)
+            if override is not None and tool.name in reserved_tool_names:
+                self._runtime_diagnostics.append(ResourceDiagnostic(kind="extension", name=override.extension,
+                    message=f"Tool {tool.name} is reserved by this session; extension replacement ignored"))
+                override = None
             merged.append(override.tool if override is not None else tool)
         merged.extend(registration.tool for registration in extension_tools.values())
         return [self._wrap_tool(tool) for tool in merged]
@@ -1027,6 +1031,7 @@ class ExtensionRuntime:
             updates: dict[str, object] = {}
             if outcome.content is not None:
                 updates["content"] = [TextContent(text=outcome.content)]
+                updates["unabridged_text"] = None
             if outcome.details is not None:
                 updates["details"] = outcome.details
             if updates:

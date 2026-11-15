@@ -24,6 +24,7 @@ class AgentToolResult(WireModel):
     added_tool_names: list[str] | None = None
     terminate: bool | None = None
     is_error: bool = False
+    unabridged_text: str | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="before")
     @classmethod

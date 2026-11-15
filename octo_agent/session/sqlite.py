@@ -31,7 +31,7 @@ class SQLiteSessionDatabase:
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1, 2, 3):
+            if version not in (0, 1, 2, 3, 4):
                 raise RuntimeError(f"Unsupported session database version: {version}")
             if version == 0:
                 connection.execute("BEGIN IMMEDIATE")
@@ -91,6 +91,24 @@ class SQLiteSessionDatabase:
                     if "continuation_entry_id" not in columns:
                         connection.execute("ALTER TABLE topic_requests ADD COLUMN continuation_entry_id TEXT")
                     connection.execute("PRAGMA user_version = 3")
+                    connection.commit()
+                except BaseException:
+                    connection.rollback()
+                    raise
+            if version < 4:
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    connection.execute("""CREATE TABLE IF NOT EXISTS tool_artifacts (
+                        session_id TEXT NOT NULL REFERENCES sessions(session_id), artifact_id TEXT NOT NULL,
+                        tool_call_id TEXT NOT NULL, tool_name TEXT NOT NULL, request_id TEXT, topic_id TEXT,
+                        topic_path TEXT NOT NULL, sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL,
+                        char_count INTEGER NOT NULL, is_error INTEGER NOT NULL, created_at REAL NOT NULL,
+                        content BLOB NOT NULL, PRIMARY KEY(session_id, artifact_id))""")
+                    connection.execute("""CREATE TRIGGER IF NOT EXISTS artifacts_no_update BEFORE UPDATE ON tool_artifacts
+                        BEGIN SELECT RAISE(ABORT, 'Tool artifacts are immutable'); END""")
+                    connection.execute("""CREATE TRIGGER IF NOT EXISTS artifacts_no_delete BEFORE DELETE ON tool_artifacts
+                        BEGIN SELECT RAISE(ABORT, 'Tool artifacts are immutable'); END""")
+                    connection.execute("PRAGMA user_version = 4")
                     connection.commit()
                 except BaseException:
                     connection.rollback()

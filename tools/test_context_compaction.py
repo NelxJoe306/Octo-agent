@@ -405,7 +405,7 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_current_round_tool_result_that_cannot_fit_is_never_summarized_or_trimmed(self):
         async def read(call_id, arguments, signal=None, on_update=None):
-            return AgentToolResult(content='critical evidence ' * 1600)
+            return AgentToolResult(content='关键证据' * 600)
         tool = AgentTool(name='read', label='Read', description='Read evidence', parameters={}, execute_fn=read)
         session, provider, _, _ = await self.make_session([
             response('inspect', [ToolCall(id='current-read', name='read', arguments={})]),
@@ -415,7 +415,7 @@ class CompactionTests(unittest.IsolatedAsyncioTestCase):
             _ = [event async for event in session.prompt('Use the current tool evidence')]
         self.assertEqual(len(provider.calls), 1)
         self.assertFalse(any(isinstance(entry, CompactionEntry) for entry in await session.session_entries()))
-        self.assertTrue(any(isinstance(message, ToolResultMessage) and message.text == 'critical evidence ' * 1600
+        self.assertTrue(any(isinstance(message, ToolResultMessage) and message.text == '关键证据' * 600
                             for message in session.messages))
         self.assertEqual(session.context_summary_failures, 0)
         self.assertEqual(session.last_context_budget.status, 'BLOCK')
