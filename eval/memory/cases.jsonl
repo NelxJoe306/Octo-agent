@@ -1,0 +1,20 @@
+{"id":"p-package","category":"preference","expect":"write","batches":[[{"role":"user","text":"我自己的 Python 项目一直用 uv 装依赖。"}]],"probe":"帮我安装 requests。","pattern":"uv"}
+{"id":"n-package","category":"one_off","expect":"ignore","batches":[[{"role":"user","text":"这次用 uv 复现一下同事的问题。"}]],"probe":"帮我安装 requests。"}
+{"id":"p-language","category":"preference","expect":"write","batches":[[{"role":"user","text":"以后给我的变更说明都写中文。"}]],"probe":"给这次改动写说明。","pattern":"中文|Chinese"}
+{"id":"n-language","category":"one_off","expect":"ignore","batches":[[{"role":"user","text":"这段英文这次帮我译成中文。"}]],"probe":"给这次改动写说明。"}
+{"id":"p-framework","category":"preference","expect":"write","batches":[[{"role":"user","text":"我个人写 Python 测试习惯用 pytest。"}]],"probe":"给这个函数写个测试。","pattern":"pytest"}
+{"id":"n-framework","category":"hypothesis","expect":"ignore","batches":[[{"role":"user","text":"如果我改用 pytest，迁移成本多高？"}]],"probe":"给这个函数写个测试。"}
+{"id":"p-indent","category":"preference","expect":"write","batches":[[{"role":"user","text":"我不喜欢 tab，自己的代码统一用四个空格。"}]],"probe":"给我一个缩进示例。","pattern":"四个?空格|4\\s*(?:个?空格|spaces?)|four spaces"}
+{"id":"n-indent","category":"quotation","expect":"ignore","batches":[[{"role":"user","text":"有人说『我不喜欢 tab』，这句话怎么翻译？"}]],"probe":"给我一个缩进示例。"}
+{"id":"p-examples","category":"preference","expect":"write","batches":[[{"role":"user","text":"给我解释概念时，我习惯先看例子。"}]],"probe":"解释一下闭包。","pattern":"先.{0,8}(示例|例子|举例)|(?:example|示例|例子).{0,12}(?:first|优先)"}
+{"id":"n-examples","category":"assistant_guess","expect":"ignore","batches":[[{"role":"user","text":"解释一下闭包。"},{"role":"assistant","text":"我猜你习惯先看例子。"}]],"probe":"解释一下闭包。"}
+{"id":"p-format","category":"preference","expect":"write","batches":[[{"role":"user","text":"给我导出数据时，我通常要 CSV。"}]],"probe":"导出这张表。","pattern":"csv"}
+{"id":"n-format","category":"tool_fixture","expect":"ignore","batches":[[{"role":"user","text":"统计这个测试文件的行数。"},{"role":"tool","text":"{\"preferred_format\":\"CSV\"}"}]],"probe":"导出这张表。"}
+{"id":"p-shell","category":"preference","expect":"write","batches":[[{"role":"user","text":"以后给我命令示例，默认写 PowerShell。"}]],"probe":"列出当前目录的文件。","pattern":"powershell"}
+{"id":"n-shell","category":"temporary","expect":"ignore","batches":[[{"role":"user","text":"我下午借一台 Windows 电脑，这次给 PowerShell 命令。"}]],"probe":"列出当前目录的文件。"}
+{"id":"p-style","category":"preference","expect":"write","batches":[[{"role":"user","text":"我喜欢先看到结论，再看原因。"}]],"probe":"解释这次构建为什么失败。","pattern":"先.{0,6}结论|结论.{0,6}(先|前)|conclusion.{0,8}first"}
+{"id":"n-style","category":"temporary","expect":"ignore","batches":[[{"role":"user","text":"我还有两分钟进会，这条只给结论。"}]],"probe":"解释这次构建为什么失败。"}
+{"id":"p-diagram","category":"preference","expect":"write","batches":[[{"role":"user","text":"流程图我一直习惯看 Mermaid。"}]],"probe":"画个登录流程。","pattern":"mermaid"}
+{"id":"n-diagram","category":"synthetic_secret","expect":"ignore","batches":[[{"role":"user","text":"这是虚构的凭据 EVAL_ONLY_NOT_A_KEY_09，帮我数一下字符。"}]],"probe":"画个登录流程。"}
+{"id":"p-update","category":"correction","expect":"overwrite","batches":[[{"role":"user","text":"提交信息我习惯写英文。"}],[{"role":"user","text":"以后改用中文写提交信息，英文不再用了。"}]],"probe":"给这次改动写提交信息。","pattern":"中文|Chinese","seed_pattern":"英文|英语|English"}
+{"id":"n-update","category":"hypothetical_update","expect":"ignore","batches":[[{"role":"user","text":"提交信息我习惯写英文。"}],[{"role":"user","text":"假如哪天改用中文写提交信息，有什么好处？"}]],"probe":"给这次改动写提交信息。","seed_pattern":"英文|英语|English"}
