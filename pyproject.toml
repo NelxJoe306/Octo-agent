@@ -23,12 +23,12 @@ dependencies = [
 ]
 
 [project.scripts]
-octo = "octo_coding.cli:app"
+octo = "terminal_app.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["octo_agent*", "octo_ai*", "octo_memory*", "octo_coding*"]
+include = ["agent_core*", "model_adapters*", "long_term_memory*", "terminal_app*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-octo_coding = ["data/*.toml", "data/*.json", "tui/themes/*.json"]
+terminal_app = ["data/*.toml", "data/*.json", "tui/themes/*.json"]

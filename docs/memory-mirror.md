@@ -4,7 +4,7 @@ SQLite 继续负责事实、来源、任务、学习进度和收据的原子提�
 
 ## 导出行为
 
-实现位于 src/octo_memory/mirror.py，公开接口为 `MemoryMirror(store, path).export()`，返回文件是否发生变化。应用将路径设为 OCTO_HOME/memory.md；默认目录由现有 OctoPaths 管理。
+实现位于 src/long_term_memory/mirror.py，公开接口为 `MemoryMirror(store, path).export()`，返回文件是否发生变化。应用将路径设为 OCTO_HOME/memory.md；默认目录由现有 OctoPaths 管理。
 
 启用后台记忆时，worker 启动先修复镜像，成功提交后再更新。只在 SQLite 事务完成后读库和发布文件；文件 I/O 失败单独记录 last_export_error，/session 显示诊断，已提交的事实/进度/收据不回滚，也不会因导出失败重复提炼。下一次提交、worker 重启或显式导出可恢复。
 

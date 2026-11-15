@@ -4,11 +4,12 @@
 
 ## 打开
 
-首次构建，在 `D:\Octo\web` 执行：
+首次构建，在仓库根执行：
 
 ```powershell
-npm ci
-npm run build
+cd D:\Octo
+python tools/install_dependencies.py --web-only
+npm --prefix web run build
 ```
 
 启动终端：
@@ -48,12 +49,12 @@ cd D:\Octo
 ## 开发与验证
 
 ```powershell
-npm test
-npm run typecheck
-npm run build
+npm --prefix web test
+npm --prefix web run typecheck
+npm --prefix web run build
 ```
 
-`npm run dev` 只用于开发静态页面；真实会话接口由终端 `/map` 提供。运行时使用静态导出 `out/`，不需要另起 Node 服务。
+`npm --prefix web run dev` 只用于开发静态页面；真实会话接口由终端 `/map` 提供。运行时使用静态导出 `out/`，不需要另起 Node 服务。
 
 Python 检查使用临时目录与假模型：
 
@@ -64,10 +65,10 @@ cd D:\Octo
 
 ## 实现位置
 
-- `src/octo_agent/session/topics.py`：话题操作、稳定消息定位、请求与消息原子归属。
-- `src/octo_coding/session.py`：冻结请求、排队归属、话题 reminder 与事件。
-- `src/octo_coding/topic_web.py`：附着现有会话的本机 HTTP/SSE 接口。
-- `src/octo_coding/tui/app.py`：话题状态提示、`/topic` 和 `/map`。
+- `src/agent_core/session/topics.py`：话题操作、稳定消息定位、请求与消息原子归属。
+- `src/terminal_app/session.py`：冻结请求、排队归属、话题 reminder 与事件。
+- `src/terminal_app/topic_web.py`：附着现有会话的本机 HTTP/SSE 接口。
+- `src/terminal_app/tui/app.py`：话题状态提示、`/topic` 和 `/map`。
 - `web/app/page.tsx`、`web/lib/topic-map.ts`：视图与响应校验。
 - `web/styles/tokens.css`、`web/app/globals.css`：主题、布局与动态状态。
 

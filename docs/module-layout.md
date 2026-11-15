@@ -4,13 +4,13 @@
 
 | 目录 | 职责 | 可依赖 |
 | --- | --- | --- |
-| src/octo_agent | 消息/工具协议、主循环、上下文门控与共享会话存储 | 标准库和基础库 |
-| src/octo_ai | 模型服务适配器与请求预算协议 | octo_agent |
-| src/octo_memory | 长期事实/任务/收据、后台提炼、单向 Markdown 导出 | octo_agent、octo_ai 的协议 |
-| src/octo_coding | CLI/TUI、工具、provider 生命周期和应用路径适配 | 上述三个模块 |
+| src/agent_core | 消息/工具协议、主循环、上下文门控与共享会话存储 | 标准库和基础库 |
+| src/model_adapters | 模型服务适配器与请求预算协议 | agent_core |
+| src/long_term_memory | 长期事实/任务/收据、后台提炼、单向 Markdown 导出 | agent_core、model_adapters 的协议 |
+| src/terminal_app | CLI/TUI、工具、provider 生命周期和应用路径适配 | 上述三个模块 |
 | web | 独立构建的辅助话题窗口 | 本机 HTTP 接口，不导入 Python 源码 |
 
-tests/core/test_module_boundaries.py 检查依赖方向，阻止基础模块反向导入终端层。长期记忆不再位于 octo_agent.memory 或 octo_coding.memory_runtime；所有调用者一次迁移到 octo_memory，不保留旧 Python 包转发层。共享 SQLite schema 仍由基础会话存储管理，不改变现有原子提交。
+tests/core/test_module_boundaries.py 检查依赖方向，阻止基础模块反向导入终端层。长期记忆统一从 long_term_memory 导入；模块路径随目录更新，现有 Python/TypeScript 文件名保留。没有旧命名目录或包转发层。共享 SQLite schema 仍由基础会话存储管理，不改变现有原子提交。
 
 ## 依赖与安装
 

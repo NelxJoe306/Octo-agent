@@ -38,7 +38,9 @@ def main() -> None:
         environment=ROOT/'dependencies/python/.venv'
         interpreter=environment/('Scripts/python.exe' if os.name=='nt' else 'bin/python')
         if not interpreter.exists():
-            subprocess.run([uv,'venv',str(environment)],cwd=ROOT,check=True)
+            create=[uv,'venv',str(environment)]
+            if args.offline:create.append('--offline')
+            subprocess.run(create,cwd=ROOT,check=True)
         command=[uv,'pip','install','--python',str(interpreter),'-e',str(ROOT)]
         if args.offline:command.append('--offline')
         subprocess.run(command,cwd=ROOT,check=True)

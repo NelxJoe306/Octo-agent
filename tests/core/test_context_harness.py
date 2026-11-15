@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from octo_agent.harness import AgentHarness, AgentHarnessConfig
-from octo_agent.messages import AssistantMessage, TextContent, ToolCall, UserMessage
-from octo_agent.provider_events import AssistantDoneEvent
-from octo_agent.tools import AgentTool, AgentToolResult
-from octo_ai.fake import FakeProvider
+from agent_core.harness import AgentHarness, AgentHarnessConfig
+from agent_core.messages import AssistantMessage, TextContent, ToolCall, UserMessage
+from agent_core.provider_events import AssistantDoneEvent
+from agent_core.tools import AgentTool, AgentToolResult
+from model_adapters.fake import FakeProvider
 
 
 def response(text, calls=()):

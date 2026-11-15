@@ -10,23 +10,23 @@ from unittest.mock import patch
 
 import httpx
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.context_budget import ContextBudgetExceeded
-from octo_ai.anthropic import AnthropicProvider
-from octo_ai.env import AnthropicConfig, OpenAICompatibleConfig
-from octo_ai.google import GoogleGenerativeAIProvider
-from octo_ai.mistral import MistralConversationsProvider
-from octo_ai.openai_compatible import OpenAICompatibleProvider
-from octo_ai.model_limits import RuntimeModelLimits
-from octo_coding.credentials import FileCredentialStore
-from octo_coding.paths import OctoPaths
-from octo_coding.provider_config import ProviderSettings, ProviderModelMetadata, load_provider_settings, openai_compatible_config_from_provider
-from octo_coding.provider_runtime import create_model_provider, create_dynamic_model_provider
-from octo_coding.extensions.providers import DynamicProvider, ProviderModel, NoAuth, OpenAICompatibleTransport
-from octo_coding.resources import OctoResourcePaths
-from octo_coding.session import CodingSession, CodingSessionConfig
-from octo_coding.session_manager import SessionManager
+from agent_core.context_budget import ContextBudgetExceeded
+from model_adapters.anthropic import AnthropicProvider
+from model_adapters.env import AnthropicConfig, OpenAICompatibleConfig
+from model_adapters.google import GoogleGenerativeAIProvider
+from model_adapters.mistral import MistralConversationsProvider
+from model_adapters.openai_compatible import OpenAICompatibleProvider
+from model_adapters.model_limits import RuntimeModelLimits
+from terminal_app.credentials import FileCredentialStore
+from terminal_app.paths import OctoPaths
+from terminal_app.provider_config import ProviderSettings, ProviderModelMetadata, load_provider_settings, openai_compatible_config_from_provider
+from terminal_app.provider_runtime import create_model_provider, create_dynamic_model_provider
+from terminal_app.extensions.providers import DynamicProvider, ProviderModel, NoAuth, OpenAICompatibleTransport
+from terminal_app.resources import OctoResourcePaths
+from terminal_app.session import CodingSession, CodingSessionConfig
+from terminal_app.session_manager import SessionManager
 from tests.core import test_context_budget as fixtures
 
 

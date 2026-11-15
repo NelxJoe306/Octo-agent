@@ -7,16 +7,16 @@ import re
 from unittest.mock import patch
 import unittest
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.messages import ToolCall
-from octo_agent.session import SQLiteSessionStorage
-from octo_agent.session.topics import TopicRequest
+from agent_core.messages import ToolCall
+from agent_core.session import SQLiteSessionStorage
+from agent_core.session.topics import TopicRequest
 
 
 class ToolArtifactStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_full_output_survives_restart_with_frozen_source_and_middle_read(self):
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.session.artifacts import ToolArtifactStore
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'sessions.db'
             text='first\n'+'data '*10000+'MIDDLE_EVIDENCE\n'+'尾部🙂'*4000
@@ -37,7 +37,7 @@ class ToolArtifactStoreTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_utf8_nul_bounded_reads_and_session_isolation(self):
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.session.artifacts import ToolArtifactStore
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'sessions.db'
             store=ToolArtifactStore(SQLiteSessionStorage(path,'one'))
@@ -62,7 +62,7 @@ class ToolArtifactStoreTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError): await store.read('../secrets')
 
     async def test_repeated_save_is_idempotent_without_misreporting_error_status(self):
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.session.artifacts import ToolArtifactStore
         with tempfile.TemporaryDirectory() as temporary:
             store=ToolArtifactStore(SQLiteSessionStorage(Path(temporary)/'sessions.db','one'))
             call=ToolCall(id='same-call',name='fixture',arguments={})
@@ -79,10 +79,10 @@ class ToolArtifactStoreTests(unittest.IsolatedAsyncioTestCase):
     async def test_schema_three_upgrade_keeps_history_and_topic_selection(self):
         import sqlite3
         from contextlib import closing
-        from octo_agent.messages import UserMessage
-        from octo_agent.session import MessageEntry
-        from octo_agent.session.topics import SessionTopics
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.messages import UserMessage
+        from agent_core.session import MessageEntry
+        from agent_core.session.topics import SessionTopics
+        from agent_core.session.artifacts import ToolArtifactStore
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'sessions.db'
             storage=SQLiteSessionStorage(path,'old-session')
@@ -111,12 +111,12 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
         self.env.start();self.addCleanup(self.env.stop)
 
     async def make_session(self, streams, tools=None, provider=None, extension_paths=()):
-        from octo_ai.fake import FakeProvider
-        from octo_ai.model_limits import RuntimeModelLimits
-        from octo_coding.paths import OctoPaths
-        from octo_coding.resources import OctoResourcePaths
-        from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.session_manager import SessionManager
+        from model_adapters.fake import FakeProvider
+        from model_adapters.model_limits import RuntimeModelLimits
+        from terminal_app.paths import OctoPaths
+        from terminal_app.resources import OctoResourcePaths
+        from terminal_app.session import CodingSession, CodingSessionConfig
+        from terminal_app.session_manager import SessionManager
         class LimitedProvider(FakeProvider):
             def configure_request_budget(self,*,context_window,safety_margin,output_override=None,model_max_output_tokens=None):
                 return super().configure_request_budget(context_window=context_window,safety_margin=safety_margin,
@@ -137,10 +137,10 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
         return session,provider,config
 
     async def test_large_current_tool_result_does_not_block_next_model_call(self):
-        from octo_agent.messages import AssistantMessage, ToolResultMessage
-        from octo_agent.provider_events import AssistantDoneEvent
-        from octo_agent.tools import AgentTool, AgentToolResult
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.messages import AssistantMessage, ToolResultMessage
+        from agent_core.provider_events import AssistantDoneEvent
+        from agent_core.tools import AgentTool, AgentToolResult
+        from agent_core.session.artifacts import ToolArtifactStore
         text='start\n'+'x'*40000+'MIDDLE_EVIDENCE\n'+'y'*40000+'\nend'
         async def execute(call_id,arguments,signal=None,on_update=None):
             return AgentToolResult(content=text)
@@ -166,10 +166,10 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_native_bash_persists_pretruncation_text_and_model_reads_middle(self):
         import sys
-        from octo_ai.fake import FakeProvider
-        from octo_ai.model_limits import RuntimeModelLimits
-        from octo_agent.messages import AssistantMessage, ToolResultMessage
-        from octo_agent.provider_events import AssistantDoneEvent
+        from model_adapters.fake import FakeProvider
+        from model_adapters.model_limits import RuntimeModelLimits
+        from agent_core.messages import AssistantMessage, ToolResultMessage
+        from agent_core.provider_events import AssistantDoneEvent
         command=f'"{sys.executable}" -c "print(\'A\'*70000+\'MIDDLE_EVIDENCE\'+\'B\'*70000)"'
         class ReadingProvider(FakeProvider):
             async def discover_model_limits(self,model): return RuntimeModelLimits(context_window=6000,max_output_tokens=512)
@@ -204,10 +204,10 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reload_new_session_resume_and_frozen_request_keep_artifacts_scoped(self):
         import sys
-        from octo_agent.events import ToolExecutionStartEvent
-        from octo_agent.messages import AssistantMessage,ToolResultMessage
-        from octo_agent.provider_events import AssistantDoneEvent
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.events import ToolExecutionStartEvent
+        from agent_core.messages import AssistantMessage,ToolResultMessage
+        from agent_core.provider_events import AssistantDoneEvent
+        from agent_core.session.artifacts import ToolArtifactStore
         command=f'"{sys.executable}" -c "print(\'Z\'*12000)"'
         streams=[]
         for number in range(3):
@@ -246,9 +246,9 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(reference.request_id)
 
     async def test_compaction_preserves_artifact_readback(self):
-        from octo_agent.messages import AssistantMessage
-        from octo_agent.provider_events import AssistantDoneEvent
-        from octo_agent.tools import AgentTool,AgentToolResult
+        from agent_core.messages import AssistantMessage
+        from agent_core.provider_events import AssistantDoneEvent
+        from agent_core.tools import AgentTool,AgentToolResult
         text='retained original '*3000
         async def execute(*args,**kwargs): return AgentToolResult(content=text)
         tool=AgentTool(name='large',label='Large',description='Large',parameters={},execute_fn=execute)
@@ -264,18 +264,18 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
         read_tool=next(tool for tool in session.tools if tool.name=='read_artifact')
         result=await read_tool.execute('after-compact',{'artifact_id':artifact,'offset':0,'limit':64})
         self.assertIn('retained original',result.text)
-        from octo_agent.session import CompactionEntry
+        from agent_core.session import CompactionEntry
         self.assertTrue(any(isinstance(entry,CompactionEntry) for entry in await session.session_entries()))
 
 
 
 
     async def test_extension_cannot_replace_reader_but_read_hooks_still_run(self):
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from agent_core.session.artifacts import ToolArtifactStore
         extension=self.base/'reader_override.py'
         extension.write_text(
-            'from octo_agent.tools import AgentTool, AgentToolResult\n'
-            'from octo_coding.extensions import ToolResultHookResult\n'
+            'from agent_core.tools import AgentTool, AgentToolResult\n'
+            'from terminal_app.extensions import ToolResultHookResult\n'
             'async def replacement(*args, **kwargs):\n'
             '    return AgentToolResult(content="WRONG_EXTENSION_READER")\n'
             'def setup(octo):\n'
@@ -296,9 +296,9 @@ class ToolArtifactSessionTests(unittest.IsolatedAsyncioTestCase):
 
 class ArtifactProcessingTests(unittest.IsolatedAsyncioTestCase):
     async def test_persistence_failure_does_not_emit_a_fake_reference(self):
-        from octo_coding.artifacts import ArtifactTools
-        from octo_agent.session.artifacts import ToolArtifactStore
-        from octo_agent.tools import AgentToolResult
+        from terminal_app.artifacts import ArtifactTools
+        from agent_core.session.artifacts import ToolArtifactStore
+        from agent_core.tools import AgentToolResult
         with tempfile.TemporaryDirectory() as temporary:
             blocked=Path(temporary)/'blocked';blocked.write_text('not a directory')
             artifacts=ArtifactTools(ToolArtifactStore(SQLiteSessionStorage(blocked/'sessions.db','one')))
@@ -311,10 +311,10 @@ class ArtifactProcessingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(original.text,'long '*5000)
 
     async def test_externalization_preserves_images_error_and_original_result(self):
-        from octo_coding.artifacts import ArtifactTools
-        from octo_agent.session.artifacts import ToolArtifactStore
-        from octo_agent.messages import TextContent,ImageContent
-        from octo_agent.tools import AgentToolResult
+        from terminal_app.artifacts import ArtifactTools
+        from agent_core.session.artifacts import ToolArtifactStore
+        from agent_core.messages import TextContent,ImageContent
+        from agent_core.tools import AgentToolResult
         with tempfile.TemporaryDirectory() as temporary:
             store=ToolArtifactStore(SQLiteSessionStorage(Path(temporary)/'sessions.db','one'))
             artifacts=ArtifactTools(store)
@@ -332,8 +332,8 @@ class ArtifactProcessingTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('unabridgedText',result.model_dump())
 
     async def test_read_tool_limits_and_validation_are_visible_through_execution(self):
-        from octo_coding.artifacts import ArtifactTools
-        from octo_agent.session.artifacts import ToolArtifactStore
+        from terminal_app.artifacts import ArtifactTools
+        from agent_core.session.artifacts import ToolArtifactStore
         with tempfile.TemporaryDirectory() as temporary:
             store=ToolArtifactStore(SQLiteSessionStorage(Path(temporary)/'sessions.db','one'))
             reference=await store.put(ToolCall(id='source',name='fixture',arguments={}), 'A'*10000)

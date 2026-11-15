@@ -4,7 +4,7 @@
 
 ## 公开接口
 
-实现位于 `src/octo_memory/`，入口为 `MemoryStore(SQLiteSessionDatabase(path))`。所有数据库操作在线程中执行。
+实现位于 `src/long_term_memory/`，入口为 `MemoryStore(SQLiteSessionDatabase(path))`。所有数据库操作在线程中执行。
 
 - `enqueue(session_id, through_entry_id)`：冻结从学习进度后一条至指定原文条目的连续序号范围。重复端点返回原任务；同会话只允许一个未完成任务，不同端点须等待，不能重叠处理。新增尾部留到下次。
 - `ready_jobs(limit=100)`：发现待领取及租约已到期的任务，最多 1000 条；不暴露仍有效的运行任务。`get_job` 查看状态，`progress` 查看已学习的原始日志序号。

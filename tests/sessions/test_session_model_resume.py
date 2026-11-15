@@ -9,17 +9,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.messages import AssistantMessage, UserMessage
-from octo_agent.provider_events import AssistantDoneEvent
-from octo_agent.session import SessionInfoEntry, ModelChangeEntry, MessageEntry
-from octo_ai.fake import FakeProvider
-from octo_coding.paths import OctoPaths
-from octo_coding.provider_config import OpenAICompatibleProviderConfig, ProviderSettings, ProviderConfigError
-from octo_coding.resources import OctoResourcePaths
-from octo_coding.session import CodingSession, CodingSessionConfig
-from octo_coding.session_manager import SessionManager
+from agent_core.messages import AssistantMessage, UserMessage
+from agent_core.provider_events import AssistantDoneEvent
+from agent_core.session import SessionInfoEntry, ModelChangeEntry, MessageEntry
+from model_adapters.fake import FakeProvider
+from terminal_app.paths import OctoPaths
+from terminal_app.provider_config import OpenAICompatibleProviderConfig, ProviderSettings, ProviderConfigError
+from terminal_app.resources import OctoResourcePaths
+from terminal_app.session import CodingSession, CodingSessionConfig
+from terminal_app.session_manager import SessionManager
 
 
 class ResumeProvider(FakeProvider):
@@ -65,7 +65,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_loading_retired_model_restores_history_and_uses_current_configuration(self):
         record, storage, original = await self.historical_session()
         provider = self.provider()
-        with patch('octo_coding.session.create_model_provider', return_value=provider):
+        with patch('terminal_app.session.create_model_provider', return_value=provider):
             session = await CodingSession.load(self.config(record, storage))
             self.addAsyncCleanup(session.aclose)
             self.assertEqual(session.model, 'deepseek-flash')
@@ -80,7 +80,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         record, storage, original = await self.historical_session()
         current = self.manager.create_session(cwd=self.base, model='deepseek-flash', provider_name='deepseek')
         provider = self.provider()
-        with patch('octo_coding.session.create_model_provider', return_value=provider):
+        with patch('terminal_app.session.create_model_provider', return_value=provider):
             session = await CodingSession.load(self.config(current, self.manager.storage_for(current),
                 provider=provider, runtime_provider_config=self.settings.get_provider('deepseek')))
             self.addAsyncCleanup(session.aclose)
@@ -92,12 +92,12 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await storage.read_all())[:len(original)], original)
 
     async def test_print_resume_works_with_removed_provider(self):
-        from octo_coding.cli import run_openai_print_mode
+        from terminal_app.cli import run_openai_print_mode
         record, storage, original = await self.historical_session(provider='removed-provider')
         provider = self.provider()
-        with patch('octo_coding.cli.load_provider_settings', return_value=self.settings), \
-             patch('octo_coding.cli.create_model_provider', return_value=provider), \
-             patch('octo_coding.session.create_model_provider', return_value=provider), redirect_stdout(io.StringIO()):
+        with patch('terminal_app.cli.load_provider_settings', return_value=self.settings), \
+             patch('terminal_app.cli.create_model_provider', return_value=provider), \
+             patch('terminal_app.session.create_model_provider', return_value=provider), redirect_stdout(io.StringIO()):
             await run_openai_print_mode('continue', None, self.base, resume_session_id=record.id,
                 session_manager=self.manager, extensions_enabled=False, trust_override='approve')
         self.assertEqual(provider.calls[0][0], 'deepseek-flash')
@@ -105,7 +105,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await storage.read_all())[:len(original)], original)
 
     async def test_tui_startup_uses_resolved_model_even_if_record_provider_is_removed(self):
-        from octo_coding.tui.app import run_tui_app
+        from terminal_app.tui.app import run_tui_app
         record, storage, original = await self.historical_session(provider='removed-provider')
         provider = self.provider()
         observed = []
@@ -113,11 +113,11 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, session, **options): self.session = session
             async def run_async(self):
                 observed.append((self.session.provider_name, self.session.model, [message.text for message in self.session.messages]))
-        with patch('octo_coding.tui.app.load_provider_settings', return_value=self.settings), \
-             patch('octo_coding.tui.app.provider_has_usable_credentials', return_value=True), \
-             patch('octo_coding.tui.app.create_model_provider', return_value=provider), \
-             patch('octo_coding.session.create_model_provider', return_value=provider), \
-             patch('octo_coding.tui.app.OctoTuiApp', OfflineApp):
+        with patch('terminal_app.tui.app.load_provider_settings', return_value=self.settings), \
+             patch('terminal_app.tui.app.provider_has_usable_credentials', return_value=True), \
+             patch('terminal_app.tui.app.create_model_provider', return_value=provider), \
+             patch('terminal_app.session.create_model_provider', return_value=provider), \
+             patch('terminal_app.tui.app.OctoTuiApp', OfflineApp):
             restored = await run_tui_app(model=None, cwd=self.base, session_id=record.id, session_manager=self.manager,
                 extensions_enabled=False, trust_override='approve')
         self.assertEqual(restored, record.id)
@@ -135,7 +135,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
     async def test_still_available_historical_model_is_preserved(self):
         record, storage, original = await self.historical_session(model='deepseek-flash')
         provider = self.provider()
-        with patch('octo_coding.session.create_model_provider', return_value=provider):
+        with patch('terminal_app.session.create_model_provider', return_value=provider):
             session = await CodingSession.load(self.config(record, storage))
             self.addAsyncCleanup(session.aclose)
         self.assertEqual(session.model, 'deepseek-flash')
@@ -143,9 +143,9 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await storage.read_all(), original)
 
     async def test_aborted_preparation_does_not_persist_fallback_and_adoption_is_idempotent(self):
-        from octo_coding.session_preparation import prepare_coding_session
+        from terminal_app.session_preparation import prepare_coding_session
         record, storage, original = await self.historical_session()
-        with patch('octo_coding.session.create_model_provider', side_effect=lambda *a, **k: self.provider()):
+        with patch('terminal_app.session.create_model_provider', side_effect=lambda *a, **k: self.provider()):
             prepared = await prepare_coding_session(self.config(record, storage))
             self.assertEqual(prepared.session.model, 'deepseek-flash')
             self.assertEqual(await storage.read_all(), original)
@@ -164,12 +164,12 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await storage.read_all(), committed)
 
     async def test_explicit_provider_without_model_uses_its_default(self):
-        from octo_coding.cli import run_openai_print_mode
+        from terminal_app.cli import run_openai_print_mode
         record, storage, original = await self.historical_session()
         provider = self.provider()
-        with patch('octo_coding.cli.load_provider_settings', return_value=self.settings), \
-             patch('octo_coding.cli.create_model_provider', return_value=provider), \
-             patch('octo_coding.session.create_model_provider', return_value=provider), redirect_stdout(io.StringIO()):
+        with patch('terminal_app.cli.load_provider_settings', return_value=self.settings), \
+             patch('terminal_app.cli.create_model_provider', return_value=provider), \
+             patch('terminal_app.session.create_model_provider', return_value=provider), redirect_stdout(io.StringIO()):
             await run_openai_print_mode('continue', None, self.base, provider_name='deepseek', resume_session_id=record.id,
                 session_manager=self.manager, extensions_enabled=False, trust_override='approve')
         self.assertEqual(provider.calls[0][0], 'deepseek-flash')
@@ -180,7 +180,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         configured=replace(self.settings.get_provider('deepseek'), models=('deepseek-flash','common-id'), context_windows={})
         settings=replace(self.settings, providers=(configured,))
         provider=self.provider()
-        with patch('octo_coding.session.create_model_provider', return_value=provider):
+        with patch('terminal_app.session.create_model_provider', return_value=provider):
             session=await CodingSession.load(replace(self.config(record,storage),provider_settings=settings))
             self.addAsyncCleanup(session.aclose)
         self.assertEqual(session.provider_name,'deepseek')
@@ -188,18 +188,18 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await storage.read_all(),original)
 
     async def test_rpc_resume_resolves_model_without_rewriting_history(self):
-        from octo_coding.cli import run_openai_rpc_mode
+        from terminal_app.cli import run_openai_rpc_mode
         record, storage, original = await self.historical_session()
         provider=self.provider()
         observed=[]
         class OfflineRpc:
             def __init__(self,session): self.session=session
             async def run(self): observed.append((self.session.model,[message.text for message in self.session.messages]))
-        with patch('octo_coding.cli.load_provider_settings',return_value=self.settings), \
-             patch('octo_coding.cli.SessionManager',return_value=self.manager), \
-             patch('octo_coding.cli.create_model_provider',return_value=provider), \
-             patch('octo_coding.session.create_model_provider',return_value=provider), \
-             patch('octo_coding.cli.RpcServer',OfflineRpc):
+        with patch('terminal_app.cli.load_provider_settings',return_value=self.settings), \
+             patch('terminal_app.cli.SessionManager',return_value=self.manager), \
+             patch('terminal_app.cli.create_model_provider',return_value=provider), \
+             patch('terminal_app.session.create_model_provider',return_value=provider), \
+             patch('terminal_app.cli.RpcServer',OfflineRpc):
             await run_openai_rpc_mode(None,self.base,resume_session_id=record.id,extensions_enabled=False,trust_override='approve')
         self.assertEqual(observed,[('deepseek-flash',['remember this history','historical answer'])])
         self.assertEqual((await storage.read_all())[:len(original)],original)
@@ -207,8 +207,8 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_model_fallback_preserves_selected_topic_and_message_attribution(self):
-        from octo_agent.session.topics import SessionTopics
-        from octo_coding.session_preparation import prepare_coding_session
+        from agent_core.session.topics import SessionTopics
+        from terminal_app.session_preparation import prepare_coding_session
         record, storage, original = await self.historical_session()
         topics=SessionTopics(storage)
         child=topics.create(parent_id='main',title='keep this branch',activate=True)
@@ -219,7 +219,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         topics.append_message(answer,request)
         before=topics.snapshot(child)
         raw=await storage.read_all()
-        with patch('octo_coding.session.create_model_provider',return_value=self.provider()):
+        with patch('terminal_app.session.create_model_provider',return_value=self.provider()):
             prepared=await prepare_coding_session(self.config(record,storage))
             session=await prepared.adopt()
             self.addAsyncCleanup(session.aclose)
@@ -233,17 +233,17 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dynamic_provider_can_restore_retired_model_without_an_alias(self):
         from unittest.mock import AsyncMock
-        from octo_agent.session import SessionState
-        from octo_coding.extensions.providers import DynamicProvider, ProviderModel
-        from octo_coding.extensions.provider_registry import DynamicProviderRegistry
-        from octo_coding.session import _prepare_provider_selection
+        from agent_core.session import SessionState
+        from terminal_app.extensions.providers import DynamicProvider, ProviderModel
+        from terminal_app.extensions.provider_registry import DynamicProviderRegistry
+        from terminal_app.session import _prepare_provider_selection
         record, storage, original = await self.historical_session()
         provider=self.provider()
         dynamic=DynamicProvider(id='deepseek',display_name='DeepSeek fixture',
             models=(ProviderModel(id='deepseek-flash'),),default_model='deepseek-flash',runtime_factory=lambda context:provider)
         registry=DynamicProviderRegistry()
         registry.register('fixture',dynamic)
-        with patch('octo_coding.session.create_dynamic_model_provider',new=AsyncMock(return_value=provider)) as factory:
+        with patch('terminal_app.session.create_dynamic_model_provider',new=AsyncMock(return_value=provider)) as factory:
             selected=await _prepare_provider_selection(self.config(record,storage),
                 state=SessionState.from_entries(original),provider_registry=registry)
             self.assertEqual(selected.model,'deepseek-flash')
@@ -257,7 +257,7 @@ class SessionModelResumeTests(unittest.IsolatedAsyncioTestCase):
         record, storage, original = await self.historical_session(model='deepseek-flash')
         configured=replace(self.settings.get_provider('deepseek'),models=('deepseek-flash','deepseek-v4-pro'))
         settings=replace(self.settings,providers=(configured,))
-        with patch('octo_coding.session.create_model_provider',return_value=self.provider()):
+        with patch('terminal_app.session.create_model_provider',return_value=self.provider()):
             session=await CodingSession.load(replace(self.config(record,storage,requested_model='deepseek-v4-pro'),provider_settings=settings))
             self.addAsyncCleanup(session.aclose)
         self.assertEqual(session.model,'deepseek-v4-pro')

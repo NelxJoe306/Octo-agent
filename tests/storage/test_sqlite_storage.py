@@ -9,10 +9,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.messages import UserMessage
-from octo_agent.session import MessageEntry, entry_to_json_line
+from agent_core.messages import UserMessage
+from agent_core.session import MessageEntry, entry_to_json_line
 
 
 class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
@@ -30,7 +30,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.environment.stop)
 
     async def test_reopen_recovers_stable_entries_and_isolates_sessions(self):
-        from octo_agent.session import SQLiteSessionStorage
+        from agent_core.session import SQLiteSessionStorage
 
         entry = MessageEntry(id="message-1", message=UserMessage(content="remember this"))
         await SQLiteSessionStorage(self.path, "session-a").append(entry)
@@ -40,7 +40,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await SQLiteSessionStorage(self.path, "session-b").read_all(), [])
 
     async def test_retry_is_idempotent_and_conflicting_batch_rolls_back(self):
-        from octo_agent.session import SQLiteSessionStorage
+        from agent_core.session import SQLiteSessionStorage
 
         storage = SQLiteSessionStorage(self.path, "session-a")
         original = MessageEntry(id="original", message=UserMessage(content="original"))
@@ -55,9 +55,9 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await storage.read_entry("new"))
 
     async def test_new_managed_sessions_use_only_sqlite_and_catalog_survives_restart(self):
-        from octo_agent.session import SQLiteSessionStorage
-        from octo_coding.paths import OctoPaths
-        from octo_coding.session_manager import SessionManager
+        from agent_core.session import SQLiteSessionStorage
+        from terminal_app.paths import OctoPaths
+        from terminal_app.session_manager import SessionManager
 
         paths = OctoPaths(home=self.base / "home")
         manager = SessionManager(paths)
@@ -75,8 +75,8 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
             restarted.create_session_exclusive(cwd=self.base, model="offline", session_id="new-session")
 
     async def test_legacy_import_preserves_source_ids_and_sqlite_becomes_authoritative(self):
-        from octo_coding.paths import OctoPaths
-        from octo_coding.session_manager import CodingSessionRecord, SessionManager
+        from terminal_app.paths import OctoPaths
+        from terminal_app.session_manager import CodingSessionRecord, SessionManager
 
         paths = OctoPaths(home=self.base / "home")
         manager = SessionManager(paths)
@@ -104,15 +104,15 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await restarted.storage_for(imported).read_all(), [entry, added])
 
     async def test_coding_session_and_cli_export_resume_from_sqlite(self):
-        from octo_agent.messages import AssistantMessage
-        from octo_agent.provider_events import AssistantDoneEvent
-        from octo_agent.session import JsonlSessionStorage
-        from octo_ai.fake import FakeProvider
-        from octo_coding.cli import export_session_command
-        from octo_coding.paths import OctoPaths
-        from octo_coding.resources import OctoResourcePaths
-        from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.session_manager import SessionManager
+        from agent_core.messages import AssistantMessage
+        from agent_core.provider_events import AssistantDoneEvent
+        from agent_core.session import JsonlSessionStorage
+        from model_adapters.fake import FakeProvider
+        from terminal_app.cli import export_session_command
+        from terminal_app.paths import OctoPaths
+        from terminal_app.resources import OctoResourcePaths
+        from terminal_app.session import CodingSession, CodingSessionConfig
+        from terminal_app.session_manager import SessionManager
 
         paths = OctoPaths(home=self.base / "home", agents_home=self.base / "agents")
         manager = SessionManager(paths)
@@ -149,7 +149,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
             await resumed.aclose()
 
     async def test_concurrent_batches_stay_complete_and_do_not_lose_entries(self):
-        from octo_agent.session import SQLiteSessionStorage
+        from agent_core.session import SQLiteSessionStorage
 
         async def write_batch(index):
             storage = SQLiteSessionStorage(self.path, "shared-session")
@@ -164,7 +164,7 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(entries[offset].message.text, entries[offset + 1].message.text)
 
     async def test_invalid_import_cannot_commit_a_valid_prefix(self):
-        from octo_agent.session import SQLiteSessionStorage, SessionJsonlError
+        from agent_core.session import SQLiteSessionStorage, SessionJsonlError
 
         entry = MessageEntry(id="valid-prefix", message=UserMessage(content="do not commit"))
         source = self.base / "broken.jsonl"
@@ -175,9 +175,9 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await storage.read_all(), [])
 
     async def test_export_cannot_overwrite_the_authoritative_database(self):
-        from octo_coding.cli import export_session_command
-        from octo_coding.paths import OctoPaths
-        from octo_coding.session_manager import SessionManager
+        from terminal_app.cli import export_session_command
+        from terminal_app.paths import OctoPaths
+        from terminal_app.session_manager import SessionManager
 
         manager = SessionManager(OctoPaths(home=self.base))
         record = manager.create_session(cwd=self.base, model="offline", session_id="protected")
@@ -189,8 +189,8 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await storage.read_all(), [entry])
 
     async def test_first_persist_commits_catalog_and_messages_together(self):
-        from octo_coding.paths import OctoPaths
-        from octo_coding.session_manager import SessionManager
+        from terminal_app.paths import OctoPaths
+        from terminal_app.session_manager import SessionManager
 
         paths = OctoPaths(home=self.base / "home")
         manager = SessionManager(paths)
@@ -204,27 +204,27 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await restarted.storage_for(recovered).read_all(), [entry])
 
     async def test_broken_legacy_index_does_not_block_sqlite_catalog(self):
-        from octo_coding.paths import OctoPaths
-        from octo_coding.session_manager import SessionManager
+        from terminal_app.paths import OctoPaths
+        from terminal_app.session_manager import SessionManager
 
         manager = SessionManager(OctoPaths(home=self.base))
         record = manager.create_session(cwd=self.base, model="offline", session_id="healthy")
         manager.index_path.parent.mkdir(parents=True, exist_ok=True)
         manager.index_path.write_text("{broken legacy index", encoding="utf-8")
-        with self.assertLogs("octo_coding.session_manager", level="WARNING") as diagnostic:
+        with self.assertLogs("terminal_app.session_manager", level="WARNING") as diagnostic:
             listed = manager.list_sessions()
         self.assertEqual([item.id for item in listed], [record.id])
         self.assertEqual(manager.get_session(record.id), record)
         self.assertIn(str(manager.index_path), diagnostic.output[0])
 
     async def test_rpc_session_file_roundtrip_identifies_one_sqlite_session(self):
-        from octo_ai.fake import FakeProvider
-        from octo_coding.paths import OctoPaths
-        from octo_coding.provider_config import OpenAICompatibleProviderConfig, ProviderSettings
-        from octo_coding.resources import OctoResourcePaths
-        from octo_coding.rpc import RpcServer
-        from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_coding.session_manager import SessionManager
+        from model_adapters.fake import FakeProvider
+        from terminal_app.paths import OctoPaths
+        from terminal_app.provider_config import OpenAICompatibleProviderConfig, ProviderSettings
+        from terminal_app.resources import OctoResourcePaths
+        from terminal_app.rpc import RpcServer
+        from terminal_app.session import CodingSession, CodingSessionConfig
+        from terminal_app.session_manager import SessionManager
 
         paths = OctoPaths(home=self.base / "home", agents_home=self.base / "agents")
         manager = SessionManager(paths)
@@ -264,9 +264,9 @@ class SQLiteStorageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Ambiguous", responses[2]["error"])
 
     async def test_html_download_keeps_the_session_id(self):
-        from octo_coding.cli import export_session_command
-        from octo_coding.paths import OctoPaths
-        from octo_coding.session_manager import SessionManager
+        from terminal_app.cli import export_session_command
+        from terminal_app.paths import OctoPaths
+        from terminal_app.session_manager import SessionManager
 
         manager = SessionManager(OctoPaths(home=self.base))
         record = manager.create_session(cwd=self.base, model="offline", session_id="html-session")

@@ -10,31 +10,31 @@ from unittest.mock import patch
 
 import httpx
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.context_budget import (
+from agent_core.context_budget import (
     ContextBudgetExceeded, ContextBudgetPolicy, estimate_budget_text, evaluate_context_budget,
 )
-from octo_agent.events import ContextBudgetEvent, MessageEndEvent
-from octo_agent.harness import AgentHarness, AgentHarnessConfig
-from octo_agent.messages import (
+from agent_core.events import ContextBudgetEvent, MessageEndEvent
+from agent_core.harness import AgentHarness, AgentHarnessConfig
+from agent_core.messages import (
     AssistantMessage, ImageContent, ThinkingContent, ToolCall, ToolResultMessage,
     Usage, UserMessage,
 )
-from octo_agent.provider_events import AssistantDoneEvent
-from octo_agent.session import MessageEntry
-from octo_agent.tools import AgentTool, AgentToolResult
-from octo_ai.anthropic import AnthropicProvider
-from octo_ai.env import AnthropicConfig, OpenAICompatibleConfig
-from octo_ai.fake import FakeProvider
-from octo_ai.google import GoogleGenerativeAIProvider
-from octo_ai.mistral import MistralConversationsProvider
-from octo_ai.model_limits import RequestTokenBudget, RuntimeModelLimits
-from octo_ai.openai_compatible import OpenAICompatibleProvider
-from octo_coding.paths import OctoPaths
-from octo_coding.resources import OctoResourcePaths
-from octo_coding.session import CodingSession, CodingSessionConfig
-from octo_coding.session_manager import SessionManager
+from agent_core.provider_events import AssistantDoneEvent
+from agent_core.session import MessageEntry
+from agent_core.tools import AgentTool, AgentToolResult
+from model_adapters.anthropic import AnthropicProvider
+from model_adapters.env import AnthropicConfig, OpenAICompatibleConfig
+from model_adapters.fake import FakeProvider
+from model_adapters.google import GoogleGenerativeAIProvider
+from model_adapters.mistral import MistralConversationsProvider
+from model_adapters.model_limits import RequestTokenBudget, RuntimeModelLimits
+from model_adapters.openai_compatible import OpenAICompatibleProvider
+from terminal_app.paths import OctoPaths
+from terminal_app.resources import OctoResourcePaths
+from terminal_app.session import CodingSession, CodingSessionConfig
+from terminal_app.session_manager import SessionManager
 
 
 def response(text="done", calls=()):

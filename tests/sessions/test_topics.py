@@ -14,21 +14,21 @@ from unittest.mock import patch
 
 import httpx
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.events import MessageEndEvent, ToolExecutionEndEvent
-from octo_agent.messages import AssistantMessage, UserMessage, ToolCall
-from octo_agent.provider_events import AssistantDoneEvent
-from octo_agent.session import MessageEntry, SQLiteSessionStorage
-from octo_agent.session.topics import SessionTopics, TopicRequest
-from octo_agent.session.jsonl import entry_to_json_line
-from octo_agent.tools import AgentTool, AgentToolResult
-from octo_ai.fake import FakeProvider
-from octo_coding.paths import OctoPaths
-from octo_coding.resources import OctoResourcePaths
-from octo_coding.session import CodingSession, CodingSessionConfig
-from octo_coding.session_manager import SessionManager
-from octo_coding.topic_web import TopicWeb
+from agent_core.events import MessageEndEvent, ToolExecutionEndEvent
+from agent_core.messages import AssistantMessage, UserMessage, ToolCall
+from agent_core.provider_events import AssistantDoneEvent
+from agent_core.session import MessageEntry, SQLiteSessionStorage
+from agent_core.session.topics import SessionTopics, TopicRequest
+from agent_core.session.jsonl import entry_to_json_line
+from agent_core.tools import AgentTool, AgentToolResult
+from model_adapters.fake import FakeProvider
+from terminal_app.paths import OctoPaths
+from terminal_app.resources import OctoResourcePaths
+from terminal_app.session import CodingSession, CodingSessionConfig
+from terminal_app.session_manager import SessionManager
+from terminal_app.topic_web import TopicWeb
 
 
 class TopicTests(unittest.IsolatedAsyncioTestCase):
@@ -170,14 +170,14 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m['text'] for m in (await session.topic_snapshot(child))['messages']], ['paused question','answer'])
 
     async def test_terminal_topic_commands_and_map_attach_without_model_calls(self):
-        from octo_coding.tui.app import OctoTuiApp, PromptInput
+        from terminal_app.tui.app import OctoTuiApp, PromptInput
         session, provider, _ = await self.make_session()
         app = OctoTuiApp(session)
         directory = self.base/'map-assets'
         directory.mkdir()
         (directory/'index.html').write_text('offline map fixture', encoding='utf-8')
         with patch('webbrowser.open', return_value=True), patch(
-            'octo_coding.tui.app.TopicWeb', partial(TopicWeb, directory=directory)
+            'terminal_app.tui.app.TopicWeb', partial(TopicWeb, directory=directory)
         ):
             async with app.run_test(size=(110,35)) as pilot:
                 await pilot.pause()
@@ -370,8 +370,8 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([m.text for m in session.messages], ['main question', 'main answer', 'which topic?', 'child answer'])
 
     async def test_nonzero_native_shell_result_is_reported_as_error(self):
-        from octo_agent.loop import _run_tool
-        from octo_coding.tools import create_bash_tool
+        from agent_core.loop import _run_tool
+        from terminal_app.tools import create_bash_tool
         tool = create_bash_tool(cwd=self.base)
         result, is_error, _ = await _run_tool(tool, ToolCall(id='exit', name='bash',
             arguments={'command':'exit 7', 'description':'Testing exit status'}), None)
@@ -385,7 +385,7 @@ class TopicTests(unittest.IsolatedAsyncioTestCase):
             [AssistantDoneEvent(reason='stop', message=AssistantMessage(content='reported failure', model='offline'))],
         ])
         _ = [event async for event in session.prompt('run the harmless failure fixture')]
-        from octo_agent.messages import ToolResultMessage
+        from agent_core.messages import ToolResultMessage
         evidence = [message for message in provider.calls[1][2] if isinstance(message, ToolResultMessage)]
         self.assertEqual(len(evidence), 1)
         self.assertTrue(evidence[0].is_error)

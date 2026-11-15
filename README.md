@@ -4,21 +4,17 @@ Python 编程助手，保留流式模型调用、文件与命令工具、交互�
 
 ## 运行
 
-需要 Python 3.12 或更新版本。推荐使用 uv：
+需要 Python 3.12 或更新版本及 uv。首次运行先在仓库根安装依赖，安装器会将环境建立到 dependencies/python/.venv，并提供兼容入口：
 
 ```powershell
 cd D:\Octo
-uv run octo --help
-uv run octo
-uv run octo --print "查看当前项目结构"
-```
-
-也可以安装到独立虚拟环境：
-
-```powershell
 python tools/install_dependencies.py --python-only
-.\dependencies\python\.venv\Scripts\octo.exe --help
+.\.venv\Scripts\octo.exe --help
+.\.venv\Scripts\octo.exe
+.\.venv\Scripts\octo.exe --print "查看当前项目结构"
 ```
+
+安装完成后也可使用 `uv run octo`，根 `.venv` 链接仍指向分类后的环境。Linux/macOS 使用 `.venv/bin/octo`。
 
 ## 配置
 
@@ -26,8 +22,8 @@ python tools/install_dependencies.py --python-only
 
 ```powershell
 $env:OPENAI_API_KEY = "你的 API Key"
-uv run octo setup
-uv run octo providers
+.\.venv\Scripts\octo.exe setup
+.\.venv\Scripts\octo.exe providers
 ```
 
 源码副本不会迁移其他应用的凭据、配置或历史会话。按需要在 Octo 中重新配置。模型目录仍可用 `octo models-refresh` 刷新；这不会升级 Octo 应用。
@@ -36,10 +32,10 @@ uv run octo providers
 
 ```text
 src/
-  octo_agent/    # 消息协议、主循环、上下文与基础会话存储
-  octo_ai/       # 模型适配器
-  octo_memory/   # 记忆事实、任务、后台提炼、Markdown 镜像
-  octo_coding/   # 终端应用、工具与界面适配
+  agent_core/    # 消息协议、主循环、上下文与基础会话存储
+  model_adapters/       # 模型适配器
+  long_term_memory/   # 记忆事实、任务、后台提炼、Markdown 镜像
+  terminal_app/   # 终端应用、工具与界面适配
 tests/          # core / providers / storage / memory / sessions
 web/            # 独立 Web 窗口；测试在 web/tests/
 tools/          # 验证、依赖安装和镜像重建入口
@@ -51,7 +47,7 @@ dependencies/   # Python 虚拟环境与 Web 安装包，不进 Git
 
 ## 话题地图
 
-模型、凭据、推理强度、聊天和工具继续在终端使用。在 `web/` 执行 `npm ci`、`npm run build` 后，在运行中的终端输入 `/map`，打开连接当前会话的话题树和记录窗口。
+模型、凭据、推理强度、聊天和工具继续在终端使用。在仓库根执行 `python tools/install_dependencies.py --web-only`、`npm --prefix web run build` 后，在运行中的终端输入 `/map`，打开连接当前会话的话题树和记录窗口。
 
 `/topic-list` 列出话题，`/topic-new <标题>` 建立并切换子话题，`/topic-use <ID>` 切换后续提问归属。Web 进入分支或切换标签即同步当前位置，后续提问沿本线最新位置继续。关闭浏览器不会停止终端任务。
 

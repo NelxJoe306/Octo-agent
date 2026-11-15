@@ -8,10 +8,10 @@ import subprocess
 import sys
 from unittest.mock import patch
 
-from octo_agent.messages import UserMessage
-from octo_agent.session import MessageEntry, SQLiteSessionStorage
-from octo_agent.session.sqlite import SQLiteSessionDatabase
-from octo_memory import AddFact, MemoryStore
+from agent_core.messages import UserMessage
+from agent_core.session import MessageEntry, SQLiteSessionStorage
+from agent_core.session.sqlite import SQLiteSessionDatabase
+from long_term_memory import AddFact, MemoryStore
 
 
 class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
@@ -23,7 +23,7 @@ class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.store=MemoryStore(SQLiteSessionDatabase(self.root/'octo.db'))
 
     async def test_committed_memory_exports_readable_stable_view_with_provenance(self):
-        from octo_memory.mirror import MemoryMirror
+        from long_term_memory.mirror import MemoryMirror
         await self.storage.append(MessageEntry(id='original',timestamp=0,message=UserMessage(content='我偏好 Python')))
         job=await self.store.enqueue('source','original')
         receipt=await self.store.apply(await self.store.claim(job.id),[
@@ -44,7 +44,7 @@ class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.store.progress('source'),1)
 
     async def test_publish_failure_keeps_previous_file_and_committed_database(self):
-        from octo_memory.mirror import MemoryMirror
+        from long_term_memory.mirror import MemoryMirror
         for index in range(2):
             await self.storage.append(MessageEntry(id=f'm{index}',message=UserMessage(content=f'fact {index}')))
             job=await self.store.enqueue('source',f'm{index}')
@@ -53,7 +53,7 @@ class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
                 mirror=MemoryMirror(self.store,self.root/'memory.md')
                 await mirror.export()
                 previous=mirror.path.read_bytes()
-        with patch('octo_memory.mirror.os.replace',side_effect=OSError('simulated publish failure')):
+        with patch('long_term_memory.mirror.os.replace',side_effect=OSError('simulated publish failure')):
             with self.assertRaises(OSError): await mirror.export()
         self.assertEqual(mirror.path.read_bytes(),previous)
         self.assertEqual(len(await self.store.facts()),2)
@@ -63,7 +63,7 @@ class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('fact 1',mirror.path.read_text(encoding='utf-8'))
 
     async def test_manual_markdown_edits_are_never_imported_and_concurrent_export_is_stable(self):
-        from octo_memory.mirror import MemoryMirror
+        from long_term_memory.mirror import MemoryMirror
         await self.storage.append(MessageEntry(id='m',message=UserMessage(content='Python')))
         job=await self.store.enqueue('source','m')
         await self.store.apply(await self.store.claim(job.id),[AddFact(text='Real database preference',category='preference',source_entry_ids=('m',))])
@@ -76,8 +76,8 @@ class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('Injected fake preference',path.read_text(encoding='utf-8'))
 
     async def test_superseded_and_retracted_facts_remain_in_folded_history(self):
-        from octo_memory import SupersedeFact, RetractFact
-        from octo_memory.mirror import MemoryMirror
+        from long_term_memory import SupersedeFact, RetractFact
+        from long_term_memory.mirror import MemoryMirror
         await self.storage.append(MessageEntry(id='m0',message=UserMessage(content='Python')))
         receipt=await self.store.apply(await self.store.claim((await self.store.enqueue('source','m0')).id),
             [AddFact(text='Python <script>\nsecond line',category='preference',source_entry_ids=('m0',))])
@@ -99,8 +99,8 @@ class MemoryMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(updated.fact_ids[0],content)
 
     async def test_runtime_export_failure_does_not_retry_applied_job_and_startup_repairs_view(self):
-        from octo_memory.mirror import MemoryMirror
-        from octo_memory.runtime import MemoryRuntime,MemorySettings
+        from long_term_memory.mirror import MemoryMirror
+        from long_term_memory.memory_runtime import MemoryRuntime,MemorySettings
         blocker=self.root/'blocked'
         blocker.write_text('file, not directory',encoding='utf-8')
         await self.storage.append(MessageEntry(id='user',message=UserMessage(content='I prefer Python')))

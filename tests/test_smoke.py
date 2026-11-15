@@ -17,7 +17,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 sys.dont_write_bytecode = True
-PACKAGES = ("octo_agent", "octo_ai", "octo_memory", "octo_coding")
+PACKAGES = ("agent_core", "model_adapters", "long_term_memory", "terminal_app")
 
 
 def all_sources():
@@ -25,8 +25,8 @@ def all_sources():
 
 
 def assistant_stream(content, reason="stop"):
-    from octo_agent.messages import AssistantMessage
-    from octo_agent.provider_events import AssistantDoneEvent, AssistantStartEvent, TextDeltaEvent
+    from agent_core.messages import AssistantMessage
+    from agent_core.provider_events import AssistantDoneEvent, AssistantStartEvent, TextDeltaEvent
 
     message = AssistantMessage(content=content, model="offline", stop_reason=reason)
     events = [AssistantStartEvent(partial=message)]
@@ -59,7 +59,7 @@ class SourceChecks(unittest.TestCase):
                 self.assertNotIn("startup_update_notice", text)
                 self.assertNotIn("self_docs", text)
         for removed in ("self_docs.py", "updater.py", "update_check.py", "data/docs", "data/examples", "data/release-notes"):
-            self.assertFalse((SRC / "octo_coding" / removed).exists())
+            self.assertFalse((SRC / "terminal_app" / removed).exists())
 
     def test_only_core_comments_remain(self):
         for path in all_sources():
@@ -72,7 +72,7 @@ class SourceChecks(unittest.TestCase):
 
     def test_cli_help_and_version(self):
         from typer.testing import CliRunner
-        from octo_coding.cli import app
+        from terminal_app.cli import app
 
         runner = CliRunner()
         result = runner.invoke(app, ["--help"])
@@ -86,11 +86,11 @@ class SourceChecks(unittest.TestCase):
 
     def test_packaged_resources_and_home(self):
         from importlib.resources import files
-        from octo_coding.paths import OctoPaths
-        from octo_coding.tui.themes import get_tui_theme
+        from terminal_app.paths import OctoPaths
+        from terminal_app.tui.themes import get_tui_theme
 
         for name in ("catalog.toml", "models-dev-catalog.json"):
-            self.assertTrue(files("octo_coding").joinpath("data", name).is_file())
+            self.assertTrue(files("terminal_app").joinpath("data", name).is_file())
         for name in ("octo-dark", "octo-light"):
             self.assertEqual(get_tui_theme(name).name, name)
         with tempfile.TemporaryDirectory() as temporary:
@@ -100,9 +100,9 @@ class SourceChecks(unittest.TestCase):
                 self.assertEqual(paths.project_octo_dir(Path(temporary)), Path(temporary) / ".octo")
 
     def test_project_instructions_survive(self):
-        from octo_coding.context import discover_project_context
-        from octo_coding.resources import OctoResourcePaths
-        from octo_coding.system_prompt import BuildSystemPromptOptions, build_system_prompt
+        from terminal_app.context import discover_project_context
+        from terminal_app.resources import OctoResourcePaths
+        from terminal_app.system_prompt import BuildSystemPromptOptions, build_system_prompt
 
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -139,12 +139,12 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
         self.temporary.cleanup()
 
     async def session(self, streams, storage=None, extension_paths=()):
-        from octo_ai.fake import FakeProvider
-        from octo_agent.session import JsonlSessionStorage
-        from octo_coding.paths import OctoPaths
-        from octo_coding.resources import OctoResourcePaths
-        from octo_coding.session import CodingSession, CodingSessionConfig
-        from octo_memory.runtime import MemorySettings
+        from model_adapters.fake import FakeProvider
+        from agent_core.session import JsonlSessionStorage
+        from terminal_app.paths import OctoPaths
+        from terminal_app.resources import OctoResourcePaths
+        from terminal_app.session import CodingSession, CodingSessionConfig
+        from long_term_memory.memory_runtime import MemorySettings
 
         provider = FakeProvider(streams)
         paths = OctoPaths(home=self.base / "home", agents_home=self.base / "agents")
@@ -160,7 +160,7 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
         return session, provider
 
     async def test_file_tools_and_shell(self):
-        from octo_coding.tools import create_coding_tools
+        from terminal_app.tools import create_coding_tools
 
         tools = {tool.name: tool for tool in create_coding_tools(cwd=self.base)}
         self.assertEqual(set(tools), {"read", "write", "edit", "bash"})
@@ -173,8 +173,8 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.details["exit_code"], 0)
 
     async def test_agent_tool_loop_and_durable_resume(self):
-        from octo_agent.messages import ToolCall, ToolResultMessage
-        from octo_agent.session import JsonlSessionStorage, MessageEntry
+        from agent_core.messages import ToolCall, ToolResultMessage
+        from agent_core.session import JsonlSessionStorage, MessageEntry
 
         storage = JsonlSessionStorage(self.base / "session.jsonl")
         session, provider = await self.session([
@@ -197,11 +197,11 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(getattr(message, "text", "") == "verified alpha" for message in history))
 
     async def test_extension_permission_gate(self):
-        from octo_agent.messages import ToolCall
+        from agent_core.messages import ToolCall
 
         extension = self.base / "deny_write.py"
         extension.write_text(
-            'from octo_coding.extensions import ToolCallHookResult\n'
+            'from terminal_app.extensions import ToolCallHookResult\n'
             'def setup(octo):\n'
             '    @octo.on("tool_call")\n'
             '    def deny(event, context):\n'
@@ -217,7 +217,7 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
         self.assertIn("write", [tool.name for tool in provider.calls[0][3]])
 
     async def test_tui_mounts_and_renders_new_brand(self):
-        from octo_coding.tui.app import OctoTuiApp
+        from terminal_app.tui.app import OctoTuiApp
 
         session, _ = await self.session([])
         app = OctoTuiApp(session)
@@ -227,9 +227,9 @@ class RuntimeChecks(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(app.theme, "octo-dark")
 
     async def test_html_export_keeps_rendering(self):
-        from octo_agent.messages import UserMessage
-        from octo_agent.session import MessageEntry
-        from octo_coding.session_export import render_session_html
+        from agent_core.messages import UserMessage
+        from agent_core.session import MessageEntry
+        from terminal_app.session_export import render_session_html
 
         html = render_session_html([MessageEntry(message=UserMessage(content="fixture content"))])
         self.assertIn("fixture content", html)

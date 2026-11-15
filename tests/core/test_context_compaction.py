@@ -9,25 +9,25 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from octo_memory.runtime import MemorySettings
+from long_term_memory.memory_runtime import MemorySettings
 
-from octo_agent.events import MessageEndEvent
-from octo_agent.context_budget import ContextBudgetExceeded
-from octo_agent.context_recovery import overflow_token_deficit
-from octo_coding.compaction import context_blocks, select_context_blocks
-from octo_coding.tui.adapter import TuiEventAdapter
-from octo_coding.tui.state import TuiState
-from octo_agent.messages import AssistantMessage, ToolCall, ToolResultMessage, UserMessage
-from octo_agent.provider_events import AssistantDoneEvent, AssistantErrorEvent
-from octo_agent.session import CompactionEntry, MessageEntry, CustomEntry
-from octo_agent.tools import AgentTool, AgentToolResult
-from octo_ai.fake import FakeProvider
-from octo_ai.model_limits import RuntimeModelLimits
-from octo_coding.context_window import SUMMARIZATION_SYSTEM_PROMPT
-from octo_coding.paths import OctoPaths
-from octo_coding.resources import OctoResourcePaths
-from octo_coding.session import CodingSession, CodingSessionConfig
-from octo_coding.session_manager import SessionManager
+from agent_core.events import MessageEndEvent
+from agent_core.context_budget import ContextBudgetExceeded
+from agent_core.context_recovery import overflow_token_deficit
+from terminal_app.compaction import context_blocks, select_context_blocks
+from terminal_app.tui.adapter import TuiEventAdapter
+from terminal_app.tui.state import TuiState
+from agent_core.messages import AssistantMessage, ToolCall, ToolResultMessage, UserMessage
+from agent_core.provider_events import AssistantDoneEvent, AssistantErrorEvent
+from agent_core.session import CompactionEntry, MessageEntry, CustomEntry
+from agent_core.tools import AgentTool, AgentToolResult
+from model_adapters.fake import FakeProvider
+from model_adapters.model_limits import RuntimeModelLimits
+from terminal_app.context_window import SUMMARIZATION_SYSTEM_PROMPT
+from terminal_app.paths import OctoPaths
+from terminal_app.resources import OctoResourcePaths
+from terminal_app.session import CodingSession, CodingSessionConfig
+from terminal_app.session_manager import SessionManager
 
 
 def response(text, calls=()):

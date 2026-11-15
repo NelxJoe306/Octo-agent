@@ -7,10 +7,10 @@ import sys
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 
-from octo_agent.session.sqlite import SQLiteSessionDatabase
-from octo_coding.paths import OctoPaths
-from octo_memory import MemoryStore
-from octo_memory.mirror import MemoryMirror
+from agent_core.session.sqlite import SQLiteSessionDatabase
+from terminal_app.paths import OctoPaths
+from long_term_memory import MemoryStore
+from long_term_memory.mirror import MemoryMirror
 
 
 def main() -> None:
