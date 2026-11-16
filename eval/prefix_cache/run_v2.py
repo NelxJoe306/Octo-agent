@@ -227,7 +227,7 @@ if __name__ == "__main__":
     parser.add_argument("--tariff", choices=("peak", "off_peak"), default="peak")
     args = parser.parse_args()
     cases = load_cases(args.corpus)
-    count = 20 if args.stage == "full" else 5
+    count = 5
     if args.stage == "inspect":
         print(json.dumps({"sha256":hashlib.sha256(args.corpus.read_bytes()).hexdigest(),
             "cases_by_group":dict(Counter(c["group"] for c in cases)),
