@@ -387,12 +387,16 @@ class OpenAICompatibleProvider:
                     return
 
         async def observed() -> AsyncIterator[ProviderEvent]:
+            source = iterator()
             try:
-                async for event in iterator():
+                async for event in source:
                     trace.event(event)
                     yield event
             finally:
-                trace.finish()
+                try:
+                    await source.aclose()
+                finally:
+                    trace.finish()
         trace = RequestTrace(payload, model, session_id)
         return observed()
 
