@@ -49,4 +49,5 @@ class PrefixTransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(record["prefix_hash"], build_prefix(sent[0])["prefix_hash"])
             self.assertEqual(record["cached_input_tokens"], 20)
             self.assertEqual(record["input_tokens"], 64)
+            self.assertEqual(record["raw_usage"]["prompt_cache_hit_tokens"], 20)
             self.assertIsNotNone(record["first_text_ms"])

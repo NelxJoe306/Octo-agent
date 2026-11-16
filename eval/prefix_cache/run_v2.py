@@ -68,6 +68,17 @@ def input_cost(row, rates):
     return (hit*rates["hit"] + (total-hit)*rates["miss"])/1_000_000
 
 
+def cache_accounting_ok(row):
+    raw = row.get("raw_usage", {})
+    required = ("prompt_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
+    if not all(name in raw for name in required):
+        return None
+    total, hit, miss = (raw[name] for name in required)
+    return (total == hit + miss and 0 <= hit <= total
+            and row["input_tokens"] == total and row["cached_input_tokens"] == hit
+            and raw.get("cached_tokens", hit) == hit)
+
+
 def summarize(rows, cases, stage, rates):
     expected_repeats = 5 if stage == "full" else 1
     phases = ("priming", "measured") if stage == "full" else ("preflight",)
@@ -77,7 +88,8 @@ def summarize(rows, cases, stage, rates):
         for phase in phases:
             subset = [row for row in rows if row["group"] == group and row["phase"] == phase]
             expected = len(selected_cases)*2*(expected_repeats if phase == "measured" else 1)
-            invalid = [row for row in subset if row["status"] != "stop" or not row["output_ok"] or row["retries"]]
+            invalid = [row for row in subset if row["status"] != "stop" or not row["output_ok"] or row["retries"]
+                       or row.get("cache_accounting_ok", True) is not True]
             missing = sum(row.get("cached_input_tokens") is None for row in subset)
             complete = len(subset) == expected and not invalid and not missing
             pairs = []
@@ -182,6 +194,7 @@ async def run(args, cases, prices):
                             raise RuntimeError("Missing adapter metrics")
                         row = {**metric, "id":case["id"], "group":case["group"], "phase":phase, "step":step,
                             "enabled":enabled, "output_ok":output_ok, "source_kind":case["source_kind"]}
+                        row["cache_accounting_ok"] = cache_accounting_ok(row)
                         row["uncached_input_tokens"] = (row["input_tokens"] - row["cached_input_tokens"]
                             if row["input_tokens"] is not None and row["cached_input_tokens"] is not None else None)
                         row["estimated_input_usd"] = input_cost(row, rates)
@@ -191,7 +204,7 @@ async def run(args, cases, prices):
                         stream.write(json.dumps(row, ensure_ascii=False)+"\n")
                         stream.flush()
                         print(len(rows), "/", planned, case["id"], phase, enabled, row["status"], output_ok, flush=True)
-                        if not output_ok or row["status"] != "stop" or row["cached_input_tokens"] is None or row["retries"]:
+                        if not output_ok or row["status"] != "stop" or row["cached_input_tokens"] is None or row["retries"] or row["cache_accounting_ok"] is not True:
                             raise RuntimeError("Correctness/usage gate failed; run stopped, partial evidence retained")
     finally:
         await provider.aclose()

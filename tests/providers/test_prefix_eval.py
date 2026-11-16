@@ -2,10 +2,19 @@ import unittest
 from pathlib import Path
 import tempfile
 
-from eval.prefix_cache.run_v2 import input_cost, summarize, load_cases, assemble
+from eval.prefix_cache.run_v2 import input_cost, summarize, load_cases, assemble, cache_accounting_ok
 
 
 class PrefixEvalTests(unittest.TestCase):
+    def test_raw_usage_disagreement_fails_accounting(self):
+        row = {"input_tokens":100, "cached_input_tokens":80, "raw_usage":{
+            "prompt_tokens":100, "prompt_cache_hit_tokens":80, "prompt_cache_miss_tokens":20, "cached_tokens":80}}
+        self.assertTrue(cache_accounting_ok(row))
+        row["raw_usage"]["cached_tokens"] = 0
+        self.assertFalse(cache_accounting_ok(row))
+        row["raw_usage"] = {}
+        self.assertIsNone(cache_accounting_ok(row))
+
     def test_pairs_repeats_by_history_and_retains_missing_cases(self):
         cases = [{"id":group+"-0", "group":group} for group in ("short", "long", "dynamic")]
         rows = []

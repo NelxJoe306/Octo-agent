@@ -1,0 +1,23 @@
+{
+  "rows": 180,
+  "paired_measurement_requests": 150,
+  "independent_recalculation": [
+    {
+      "group": "short",
+      "independent_delta_pp": "-0.2388888402868299112623607200",
+      "recorded_total_input": 136404
+    },
+    {
+      "group": "long",
+      "independent_delta_pp": "-0.1194519313123744043821162200",
+      "recorded_total_input": 287940
+    },
+    {
+      "group": "dynamic",
+      "independent_delta_pp": "93.21293329449461112729391203",
+      "recorded_total_input": 213258
+    }
+  ],
+  "dynamic_mock_http_pairs_equal_after_relocating_metadata": 30,
+  "historical_raw_server_usage_values_retained": false
+}
