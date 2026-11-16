@@ -45,7 +45,7 @@ class ArtifactTools:
             return AgentToolResult(content=json.dumps(metadata, ensure_ascii=False) + '\n' + chunk.text,
                                    details=metadata)
 
-        return AgentTool(name=READ_ARTIFACT_TOOL, label='Read artifact',
+        return AgentTool(name=READ_ARTIFACT_TOOL, label='Read artifact', access="read",
             description='Read a bounded part of a persistent tool output in the current session. '
                         'Use artifact IDs from output previews. offset and limit are UTF-8 bytes; '
                         'follow next_offset to continue. At most 4096 bytes per read. IDs survive resume and compaction.',

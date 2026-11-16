@@ -7,7 +7,7 @@ import os
 import signal
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -368,11 +368,11 @@ def create_read_tool(
     image_support: ImageSupportState | None = None,
 ) -> AgentTool:
 
-    return create_read_tool_definition(
+    return replace(create_read_tool_definition(
         cwd=cwd,
         operations=operations,
         image_support=image_support,
-    ).to_agent_tool()
+    ).to_agent_tool(), access="read")
 
 
 def create_write_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinition:

@@ -37,7 +37,7 @@ class PrefixTransportTests(unittest.IsolatedAsyncioTestCase):
         sent = []
         async def handle(request):
             sent.append(json.loads(request.content))
-            body = 'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+            body = 'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}],"usage":{"prompt_tokens":64,"completion_tokens":1,"prompt_cache_hit_tokens":20}}\n\ndata: [DONE]\n\n'
             return httpx.Response(200, text=body, headers={"content-type":"text/event-stream"})
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"OCTO_PREFIX_LOG":str(Path(temp)/"trace")}):
             async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
@@ -45,5 +45,8 @@ class PrefixTransportTests(unittest.IsolatedAsyncioTestCase):
                 async for _ in provider.stream_response(model="fixture", system="rules", tools=[],
                         messages=[UserMessage(content="hello")], session_id="session"):
                     pass
-            record = json.loads((Path(temp)/"trace").read_text(encoding="utf-8"))
+            record = json.loads((Path(temp)/"trace").read_text(encoding="utf-8").splitlines()[-1])
             self.assertEqual(record["prefix_hash"], build_prefix(sent[0])["prefix_hash"])
+            self.assertEqual(record["cached_input_tokens"], 20)
+            self.assertEqual(record["input_tokens"], 64)
+            self.assertIsNotNone(record["first_text_ms"])

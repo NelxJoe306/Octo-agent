@@ -977,6 +977,7 @@ class ExtensionRuntime:
             execution_mode=tool.execution_mode,
             render_call=tool.render_call,
             render_result=tool.render_result,
+            access=tool.access,
         )
 
     # 权限钩子异常时阻止调用，避免策略失败后继续执行。

@@ -88,6 +88,7 @@ class AgentTool:
     execution_mode: ToolExecutionMode = "parallel"
     render_call: ToolCallRenderer | None = None
     render_result: ToolResultRenderer | None = None
+    access: Literal["read", "write", "control", "unknown"] = "unknown"
 
     @property
     def input_schema(self) -> Mapping[str, JSONValue]:

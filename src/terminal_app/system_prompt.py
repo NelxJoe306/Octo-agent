@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -9,6 +9,7 @@ from xml.sax.saxutils import escape
 
 from agent_core.tools import AgentTool
 from terminal_app.skills import Skill
+from model_adapters.prefix import prefix_optimization_enabled
 
 PromptSourceKind = Literal[
     "default", "system", "append", "extension", "context", "skill", "runtime"
@@ -76,6 +77,8 @@ def build_system_prompt(options: BuildSystemPromptOptions) -> str:
 def build_system_prompt_inspection(options: BuildSystemPromptOptions) -> SystemPromptInspection:
 
     current_date = options.current_date or date.today()
+    if prefix_optimization_enabled():
+        options = replace(options, tools=tuple(sorted(options.tools, key=lambda tool: tool.name)))
     cwd = _format_path(options.cwd)
     sources: list[SystemPromptSource] = []
 
@@ -138,7 +141,7 @@ def build_system_prompt_inspection(options: BuildSystemPromptOptions) -> SystemP
     sources.extend(_project_context_sources(options.context_files))
     if _has_tool(options.tools, "read"):
         sources.extend(_skill_sources(options.skills))
-    sources.extend(
+    runtime_sources = (
         (
             SystemPromptSource(
                 kind="runtime",
@@ -154,6 +157,8 @@ def build_system_prompt_inspection(options: BuildSystemPromptOptions) -> SystemP
             ),
         )
     )
+    if not prefix_optimization_enabled():
+        sources.extend(runtime_sources)
     text = "".join(source.content for source in sources)
     return SystemPromptInspection(
         text=text, sources=tuple(source for source in sources if source.content)

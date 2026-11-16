@@ -47,7 +47,7 @@ from model_adapters.provider import CancellationToken
 from model_adapters.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
 from model_adapters.stream import canonicalize_provider_stream
 from model_adapters.tool_call_ids import portable_tool_call_id
-from model_adapters.prefix import log_prefix
+from model_adapters.prefix import log_prefix, stable_tools, RequestTrace
 
 
 _RESPONSES_ONLY_PREFIXES: tuple[str, ...] = ("gpt-5.5", "gpt-5.4")
@@ -336,6 +336,9 @@ class OpenAICompatibleProvider:
                             if event is None:
                                 continue
 
+                            if trace.enabled:
+                                with suppress(JSONDecodeError, AttributeError, TypeError):
+                                    trace.raw(event)
                             events, stop = parser.feed(event)
                             for parser_event in events:
                                 yield parser_event
@@ -383,7 +386,15 @@ class OpenAICompatibleProvider:
                     )
                     return
 
-        return iterator()
+        async def observed() -> AsyncIterator[ProviderEvent]:
+            try:
+                async for event in iterator():
+                    trace.event(event)
+                    yield event
+            finally:
+                trace.finish()
+        trace = RequestTrace(payload, model, session_id)
+        return observed()
 
     def _prompt_cache_key(self, affinity_id: str | None) -> str | None:
         supports = self._config.compat.get("supportsPromptCacheKey")
@@ -843,7 +854,7 @@ def _build_chat_payload(
         supports_reasoning_effort=supports_reasoning_effort,
     )
     if tools:
-        payload["tools"] = [_tool_to_openai(tool) for tool in tools]
+        payload["tools"] = stable_tools([_tool_to_openai(tool) for tool in tools])
         if resolved_compat.get("zaiToolStream") is True:
             payload["tool_stream"] = True
     return payload
@@ -929,7 +940,7 @@ def _build_responses_payload(
 
         payload["reasoning"] = {"effort": effort, "summary": "auto"}
     if tools:
-        payload["tools"] = [_tool_to_responses(tool) for tool in tools]
+        payload["tools"] = stable_tools([_tool_to_responses(tool) for tool in tools])
     return payload
 
 
