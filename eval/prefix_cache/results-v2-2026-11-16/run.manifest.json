@@ -1,0 +1,33 @@
+{
+  "stage": "full",
+  "corpus_sha256": "e5acf5133959fd38438ec67b2a0dfd5abaf56b368e3bd6a924fbd33011f0355e",
+  "cases": 15,
+  "planned_requests": 180,
+  "source_kinds": {
+    "constructed": 15
+  },
+  "pricing": {
+    "verified_date": "2026-11-16",
+    "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+    "model": "deepseek-flash",
+    "currency": "USD",
+    "unit": "per_million_tokens",
+    "peak": {
+      "hit": 0.006,
+      "miss": 0.3,
+      "output": 1.2
+    },
+    "off_peak": {
+      "hit": 0.003,
+      "miss": 0.15,
+      "output": 0.6
+    }
+  },
+  "tariff": "peak",
+  "acceptance": {
+    "short_ratio_delta": 0.1,
+    "long_input_cost_saving": 0.05
+  },
+  "started_at": "2026-11-16T12:28:58.518090+00:00",
+  "model": "deepseek-flash"
+}
