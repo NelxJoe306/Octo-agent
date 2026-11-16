@@ -1,0 +1,56 @@
+[
+  {
+    "group": "short",
+    "enabled": false,
+    "requests": 100,
+    "successful": 100,
+    "cache_reported": 100,
+    "cache_ratio": 0.8454836795252225,
+    "median_sample_first_text_ms": 686.995
+  },
+  {
+    "group": "short",
+    "enabled": true,
+    "requests": 100,
+    "successful": 100,
+    "cache_reported": 100,
+    "cache_ratio": 0.8561088113542282,
+    "median_sample_first_text_ms": 601.01
+  },
+  {
+    "group": "long",
+    "enabled": false,
+    "requests": 100,
+    "successful": 100,
+    "cache_reported": 100,
+    "cache_ratio": 0.8541438263229308,
+    "median_sample_first_text_ms": 627.615
+  },
+  {
+    "group": "long",
+    "enabled": true,
+    "requests": 100,
+    "successful": 100,
+    "cache_reported": 100,
+    "cache_ratio": 0.8576104036846383,
+    "median_sample_first_text_ms": 660.885
+  },
+  {
+    "group": "mode",
+    "enabled": false,
+    "requests": 100,
+    "successful": 100,
+    "cache_reported": 100,
+    "cache_ratio": 0.8649673977474808,
+    "median_sample_first_text_ms": 584.04
+  },
+  {
+    "group": "mode",
+    "enabled": true,
+    "requests": 100,
+    "successful": 100,
+    "cache_reported": 100,
+    "cache_ratio": 0.8619019492025989,
+    "median_sample_first_text_ms": 624.645
+  }
+]
