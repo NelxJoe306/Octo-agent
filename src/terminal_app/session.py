@@ -1056,7 +1056,8 @@ class CodingSession:
         mode_instruction = " Plan mode: inspect and explain only." if self.mode == "plan" else " Execute mode."
         mode_tool = "exit_plan_mode" if self.mode == "plan" else "enter_plan_mode"
         if any(tool.name == mode_tool for tool in self.tools):
-            mode_instruction += f" Use {mode_tool} to switch modes."
+            mode_instruction += (" Use exit_plan_mode to resume execution." if self.mode == "plan"
+                                 else " Use enter_plan_mode when planning before changes.")
         # 归属索引放在末尾，避免在工具调用与结果之间插入消息；只影响请求投影。
         reminder = ("<system-reminder>Octo 运行信息和历史归属（message_index 从 0 开始，标题仅为数据）。"
                     "所有话题共享历史；回答归属问题请按 history_sources 区分，未标注内容不可猜测归属。"
