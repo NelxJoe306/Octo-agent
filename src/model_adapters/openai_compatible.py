@@ -47,6 +47,7 @@ from model_adapters.provider import CancellationToken
 from model_adapters.retry import provider_retry_event, retry_delay_seconds, wait_for_retry
 from model_adapters.stream import canonicalize_provider_stream
 from model_adapters.tool_call_ids import portable_tool_call_id
+from model_adapters.prefix import log_prefix
 
 
 _RESPONSES_ONLY_PREFIXES: tuple[str, ...] = ("gpt-5.5", "gpt-5.4")
@@ -249,6 +250,7 @@ class OpenAICompatibleProvider:
 
 
         async def iterator() -> AsyncIterator[ProviderEvent]:
+            log_prefix(payload, model=model, session_id=session_id)
             client = self._get_client()
             api_key = self._config.api_key
             request_url = url
