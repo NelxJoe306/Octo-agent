@@ -1,0 +1,9 @@
+{
+  "verified_date": "2026-11-16",
+  "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+  "model": "deepseek-flash",
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "peak": {"hit": 0.006, "miss": 0.3, "output": 1.2},
+  "off_peak": {"hit": 0.003, "miss": 0.15, "output": 0.6}
+}

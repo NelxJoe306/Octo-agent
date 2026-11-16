@@ -1,0 +1,134 @@
+[
+  {
+    "group": "short",
+    "enabled": false,
+    "phase": "first_observation",
+    "independent_histories": 20,
+    "observations": 20,
+    "cache_ratio_median": 0.6836795252225519,
+    "q1": 0.6836795252225519,
+    "q3": 0.6836795252225519,
+    "cached_requests": 17
+  },
+  {
+    "group": "short",
+    "enabled": false,
+    "phase": "following_four",
+    "independent_histories": 20,
+    "observations": 80,
+    "cache_ratio_median": 0.9115727002967359,
+    "q1": 0.9115727002967359,
+    "q3": 0.9115727002967359,
+    "cached_requests": 80
+  },
+  {
+    "group": "short",
+    "enabled": true,
+    "phase": "first_observation",
+    "independent_histories": 20,
+    "observations": 20,
+    "cache_ratio_median": 0.6812536960378475,
+    "q1": 0.6812536960378475,
+    "q3": 0.6812536960378475,
+    "cached_requests": 19
+  },
+  {
+    "group": "short",
+    "enabled": true,
+    "phase": "following_four",
+    "independent_histories": 20,
+    "observations": 80,
+    "cache_ratio_median": 0.9083382613837966,
+    "q1": 0.9083382613837966,
+    "q3": 0.9083382613837966,
+    "cached_requests": 80
+  },
+  {
+    "group": "long",
+    "enabled": false,
+    "phase": "first_observation",
+    "independent_histories": 20,
+    "observations": 20,
+    "cache_ratio_median": 0.5557666214382633,
+    "q1": 0.5557666214382633,
+    "q3": 0.5557666214382633,
+    "cached_requests": 20
+  },
+  {
+    "group": "long",
+    "enabled": false,
+    "phase": "following_four",
+    "independent_histories": 20,
+    "observations": 80,
+    "cache_ratio_median": 0.9378561736770692,
+    "q1": 0.9378561736770692,
+    "q3": 0.9378561736770692,
+    "cached_requests": 80
+  },
+  {
+    "group": "long",
+    "enabled": true,
+    "phase": "first_observation",
+    "independent_histories": 20,
+    "observations": 20,
+    "cache_ratio_median": 0.5548631807098348,
+    "q1": 0.5548631807098348,
+    "q3": 0.5548631807098348,
+    "cached_requests": 20
+  },
+  {
+    "group": "long",
+    "enabled": true,
+    "phase": "following_four",
+    "independent_histories": 20,
+    "observations": 80,
+    "cache_ratio_median": 0.9363316174478461,
+    "q1": 0.9363316174478461,
+    "q3": 0.9363316174478461,
+    "cached_requests": 80
+  },
+  {
+    "group": "mode",
+    "enabled": false,
+    "phase": "first_observation",
+    "independent_histories": 20,
+    "observations": 20,
+    "cache_ratio_median": 0.6828699579931587,
+    "q1": 0.6820603907637656,
+    "q3": 0.6836795252225519,
+    "cached_requests": 20
+  },
+  {
+    "group": "mode",
+    "enabled": false,
+    "phase": "following_four",
+    "independent_histories": 20,
+    "observations": 80,
+    "cache_ratio_median": 0.9104932773242116,
+    "q1": 0.9094138543516874,
+    "q3": 0.9115727002967359,
+    "cached_requests": 80
+  },
+  {
+    "group": "mode",
+    "enabled": true,
+    "phase": "first_observation",
+    "independent_histories": 20,
+    "observations": 20,
+    "cache_ratio_median": 0.6804498568684813,
+    "q1": 0.679646017699115,
+    "q3": 0.6812536960378475,
+    "cached_requests": 20
+  },
+  {
+    "group": "mode",
+    "enabled": true,
+    "phase": "following_four",
+    "independent_histories": 20,
+    "observations": 80,
+    "cache_ratio_median": 0.9072664758246416,
+    "q1": 0.9061946902654867,
+    "q3": 0.9083382613837966,
+    "cached_requests": 80
+  }
+]

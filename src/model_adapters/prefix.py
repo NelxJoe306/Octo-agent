@@ -62,6 +62,7 @@ class RequestTrace:
         self.first_text_ms = None
         self.usage = None
         self.cache_usage_reported = None
+        self.cache_usage_fields = []
         self.retries = 0
         self.status = "incomplete"
         self.record = {}
@@ -81,6 +82,9 @@ class RequestTrace:
         if isinstance(usage, dict):
             details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
             self.cache_usage_reported = "prompt_cache_hit_tokens" in usage or "cached_tokens" in details
+            self.cache_usage_fields = [name for name in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens") if name in usage]
+            if "cached_tokens" in details:
+                self.cache_usage_fields.append("cached_tokens")
 
     def event(self, event):
         if not self.enabled:
@@ -105,6 +109,8 @@ class RequestTrace:
             "first_output_ms":self.first_output_ms, "first_text_ms":self.first_text_ms,
             "elapsed_ms":round((monotonic()-self.started)*1000, 2),
             "cache_usage_reported":self.cache_usage_reported,
+            "cache_usage_fields":self.cache_usage_fields,
+            "output_tokens":self.usage.output if self.usage else None,
             "input_tokens":self.usage.input + self.usage.cache_read + self.usage.cache_write if self.usage else None,
             "cached_input_tokens":self.usage.cache_read if self.usage and self.cache_usage_reported else None})
         write_diagnostic(self.record)

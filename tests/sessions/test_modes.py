@@ -8,6 +8,7 @@ from unittest.mock import patch
 from agent_core.messages import AssistantMessage, ToolCall, ToolResultMessage
 from agent_core.provider_events import AssistantDoneEvent
 from agent_core.session import SQLiteSessionStorage
+from agent_core.tools import AgentTool, AgentToolResult
 from long_term_memory.memory_runtime import MemorySettings
 from model_adapters.fake import FakeProvider
 from model_adapters.prefix import build_prefix, stable_tools
@@ -33,6 +34,9 @@ class ModeTests(unittest.IsolatedAsyncioTestCase):
                 ToolCall(id="enter", name="enter_plan_mode", arguments={}),
                 ToolCall(id="write", name="write", arguments={"path":"output.txt","content":"forbidden"}),
                 ToolCall(id="shell", name="bash", arguments={"command":"echo forbidden"}),
+                ToolCall(id="bash_lc", name="bash", arguments={"command":"bash -lc 'echo forbidden'"}),
+                ToolCall(id="sh_c", name="bash", arguments={"command":"sh -c 'echo forbidden'"}),
+                ToolCall(id="powershell", name="bash", arguments={"command":"powershell -Command 'Write-Output forbidden'"}),
                 ToolCall(id="unknown", name="unknown", arguments={}),
                 ToolCall(id="read", name="read", arguments={"path":"input.txt"}),
             ]
@@ -44,13 +48,23 @@ class ModeTests(unittest.IsolatedAsyncioTestCase):
                     resource_paths=OctoResourcePaths(root=paths.home, agents_root=paths.agents_home, cwd=root, paths=paths),
                     memory_settings=MemorySettings(enabled=False))
             session = await CodingSession.load(config(first))
+            unknown_executed = []
+            async def unknown_tool(call_id, arguments, signal=None, on_update=None):
+                unknown_executed.append(call_id)
+                return AgentToolResult(content="unexpected execution")
+            session._harness.config.tools.append(AgentTool(name="unknown", label="fixture",
+                description="Fixture extension with undeclared effects",
+                parameters={"type":"object","properties":{}}, execute_fn=unknown_tool))
             try:
-                async for _ in session.prompt("Plan"):
-                    pass
+                events = [event async for event in session.prompt("Plan")]
+                end = next(event for event in reversed(events) if event.type == "agent_end")
+                self.assertEqual(end.messages[-1].text, "OK")
                 self.assertEqual(session.mode, "plan")
                 self.assertFalse((root/"output.txt").exists())
+                self.assertEqual(unknown_executed, [])
                 results = {m.tool_call_id:m for m in first.calls[1][2] if isinstance(m, ToolResultMessage)}
-                self.assertTrue(all(results[k].is_error for k in ("write", "shell", "unknown")))
+                self.assertTrue(all(results[k].is_error for k in ("write", "shell", "bash_lc", "sh_c", "powershell", "unknown")))
+                self.assertFalse(results["read"].is_error)
                 self.assertIn("hello", results["read"].text)
                 self.assertIn("Plan mode:", first.calls[1][2][-1].text)
                 self.assertEqual(build_prefix({"instructions":first.calls[0][1], "tools":[t.parameters for t in first.calls[0][3]]}),
