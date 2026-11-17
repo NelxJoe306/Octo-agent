@@ -6,6 +6,12 @@ import {
   layoutRounds,
   turnSchema,
   openTopicTab,
+  stateSchema,
+  sessionListSchema,
+  runSnapshotSchema,
+  runEventEnvelopeSchema,
+  createRunStreamState,
+  applyRunEvent,
 } from "../lib/topic-map";
 
 const fixture = {
@@ -170,4 +176,122 @@ test("进入分支追加标签，重复进入复用原标签", () => {
   assert.ok(first && second);
   const tabs = openTopicTab(openTopicTab([], first.id), second.id);
   assert.deepEqual(openTopicTab(tabs, first.id), [first.id, second.id]);
+});
+
+test("服务状态、会话列表校验与断连重连快照替换不重复拼接正文", () => {
+  const state = stateSchema.parse({
+    mode: "service",
+    session_id: "sess-1",
+    session_title: "测试会话",
+    current_topic_id: "main",
+    active_run_id: "run-1",
+    active_run_topic_id: "main",
+    active_run_status: "running",
+    running: true,
+    model: "deepseek-flash",
+    provider_name: "deepseek",
+    model_display_name: "DeepSeek Flash",
+    notice: null,
+    capabilities: {
+      chat: true,
+      sessions: true,
+      topics: true,
+      streaming: true,
+      cancel: true,
+    },
+  });
+  assert.equal(state.active_run_id, "run-1");
+
+  const sessions = sessionListSchema.parse({
+    active_session_id: "sess-1",
+    sessions: [
+      {
+        id: "sess-1",
+        title: "测试会话",
+        model: "deepseek-flash",
+        provider_name: "deepseek",
+        created_at: 1000,
+        updated_at: 1001,
+        is_active: true,
+      },
+    ],
+  });
+  assert.equal(sessions.sessions.length, 1);
+
+  const snap1 = runSnapshotSchema.parse({
+    run_id: "run-1",
+    client_request_id: "req-1",
+    session_id: "sess-1",
+    topic_id: "main",
+    status: "running",
+    seq: 3,
+    user_text: "hi",
+    assistant_text: "Step 1\n\nHel",
+    thinking_text: "",
+    committed_assistant_text: "Step 1",
+    committed_thinking_text: "",
+    tool_executions: [],
+    error_code: null,
+    error_message: null,
+    created_at: 1000,
+    updated_at: 1001,
+    finished_at: null,
+  });
+  let stream: ReturnType<typeof createRunStreamState> | null =
+    createRunStreamState(snap1);
+
+  // 旧序号事件必须被忽略。
+  stream = applyRunEvent(
+    stream,
+    runEventEnvelopeSchema.parse({
+      run_id: "run-1",
+      session_id: "sess-1",
+      topic_id: "main",
+      seq: 2,
+      kind: "agent_event",
+      payload: {
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "old" }] },
+      },
+    }),
+  );
+  assert.equal(stream?.snapshot.assistant_text, "Step 1\n\nHel");
+
+  // 正常增量只替换当前轮，不破坏已完成轮。
+  stream = applyRunEvent(
+    stream,
+    runEventEnvelopeSchema.parse({
+      run_id: "run-1",
+      session_id: "sess-1",
+      topic_id: "main",
+      seq: 4,
+      kind: "agent_event",
+      payload: {
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "Hello" }] },
+      },
+    }),
+  );
+  assert.equal(stream?.snapshot.assistant_text, "Step 1\n\nHello");
+
+  // 重连 snapshot 直接替换整个运行快照，不能累加到原有正文末尾。
+  stream = applyRunEvent(
+    stream,
+    runEventEnvelopeSchema.parse({
+      run_id: "run-1",
+      session_id: "sess-1",
+      topic_id: "main",
+      seq: 6,
+      kind: "snapshot",
+      payload: {
+        ...snap1,
+        seq: 6,
+        assistant_text: "Step 1\n\nHello world",
+        status: "completed",
+        finished_at: 1002,
+      },
+    }),
+  );
+  assert.equal(stream?.snapshot.assistant_text, "Step 1\n\nHello world");
+  assert.equal(stream?.snapshot.status, "completed");
 });

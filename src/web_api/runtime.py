@@ -146,6 +146,8 @@ class _RunRecord:
             user_text=self.user_text,
             assistant_text=self.assistant_text,
             thinking_text=self.thinking_text,
+            committed_assistant_text="\n\n".join(self.completed_assistant_texts),
+            committed_thinking_text="\n\n".join(self.completed_thinking_texts),
             tool_executions=[item.model_copy(deep=True) for item in self.tool_executions],
             error_code=self.error_code,
             error_message=self.error_message,
@@ -909,9 +911,13 @@ class WebRuntime:
                     run.subscribers.remove(subscriber)
                 self._drain_and_close_queue(subscriber.queue)
 
-    def _close_run_subscribers(self, run: _RunRecord) -> None:
+    def _close_run_subscribers(self, run: _RunRecord, *, drain: bool = False) -> None:
         for subscriber in tuple(run.subscribers):
-            self._drain_and_close_queue(subscriber.queue)
+            if drain:
+                self._drain_and_close_queue(subscriber.queue)
+            else:
+                with suppress(asyncio.QueueFull):
+                    subscriber.queue.put_nowait(None)
         run.subscribers.clear()
 
     async def aclose(self) -> None:
@@ -943,7 +949,7 @@ class WebRuntime:
         self._map_subscribers.clear()
 
         for run in self._runs_by_id.values():
-            self._close_run_subscribers(run)
+            self._close_run_subscribers(run, drain=True)
 
         if self._unsubscribe_topics is not None:
             self._unsubscribe_topics()

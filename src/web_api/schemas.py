@@ -153,6 +153,8 @@ class RunSnapshotResponse(BaseModel):
     user_text: str
     assistant_text: str
     thinking_text: str
+    committed_assistant_text: str = ""
+    committed_thinking_text: str = ""
     tool_executions: list[ToolExecutionState] = Field(default_factory=list)
     error_code: str | None = None
     error_message: str | None = None

@@ -16,21 +16,44 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Send,
+  Square,
   Sun,
   Terminal,
+  Wrench,
   X,
 } from "lucide-react";
 import { MessageContent } from "@/components/message-content";
 import { OctoMark } from "@/components/mark";
 import { ResizeDivider } from "@/components/resize-divider";
 import {
-  snapshotSchema,
-  topicId,
+  applyRunEvent,
+  createRunStreamState,
+  healthSchema,
+  isTerminalRunStatus,
   layoutRounds,
   openTopicTab,
+  runAcceptedSchema,
+  runEventEnvelopeSchema,
+  runSnapshotSchema,
+  sessionActionSchema,
+  sessionListSchema,
+  snapshotSchema,
+  stateSchema,
+  topicId,
 } from "@/lib/topic-map";
-import type { Message, Snapshot, TopicCommand, TopicId } from "@/lib/topic-map";
+import type {
+  Message,
+  RunSnapshot,
+  RunStreamState,
+  ServiceState,
+  SessionSummary,
+  Snapshot,
+  TopicCommand,
+  TopicId,
+} from "@/lib/topic-map";
 
+type TransportMode = "detecting" | "service" | "map";
 type Connection =
   | { kind: "connecting" }
   | { kind: "connected" }
@@ -52,8 +75,27 @@ type MessageView = {
 };
 type ScrollTarget = { kind: "entry"; id: string } | { kind: "latest" };
 
+function generateClientRequestId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export default function Home() {
+  const [transportMode, setTransportMode] =
+    useState<TransportMode>("detecting");
+  const modeRef = useRef<TransportMode>("detecting");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [serviceState, setServiceState] = useState<ServiceState | null>(null);
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [runStream, setRunStream] = useState<RunStreamState | null>(null);
+  const runStreamRef = useRef<RunStreamState | null>(null);
+  const [subscribedRunId, setSubscribedRunId] = useState<string | null>(null);
+  const sendBaselineSeq = useRef<number | null>(null);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [connection, setConnection] = useState<Connection>({
     kind: "connecting",
   });
@@ -70,6 +112,7 @@ export default function Home() {
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<ScrollTarget | null>(null);
   const highlight = scrollTarget?.kind === "entry" ? scrollTarget.id : null;
   const [loadingPage, setLoadingPage] = useState(false);
@@ -86,31 +129,94 @@ export default function Home() {
   const view = useRef<MessageView>({});
   const dialog = useRef<HTMLDialogElement>(null);
   const topicMenu = useRef<HTMLDivElement>(null);
+  const sessionMenu = useRef<HTMLDivElement>(null);
   const tabBar = useRef<HTMLDivElement>(null);
 
-  async function request(path: string, command?: TopicCommand) {
+  function updateRunStream(next: RunStreamState | null) {
+    runStreamRef.current = next;
+    setRunStream(next);
+  }
+
+  async function apiRequest(
+    path: string,
+    options?: { method?: "GET" | "POST"; body?: unknown },
+  ) {
+    const isMap = modeRef.current === "map";
+    const method = options?.method ?? (options?.body !== undefined ? "POST" : "GET");
+    const headers: Record<string, string> = {};
+    if (isMap && token.current) {
+      headers["X-Octo-Token"] = token.current;
+    }
+    if (method === "POST") {
+      headers["Content-Type"] = "application/json";
+    }
     const response = await fetch(path, {
-      method: command ? "POST" : "GET",
+      method,
       cache: "no-store",
-      credentials: "omit",
+      credentials: isMap ? "omit" : "same-origin",
       redirect: "error",
-      headers: {
-        "X-Octo-Token": token.current,
-        ...(command ? { "Content-Type": "application/json" } : {}),
-      },
-      body: command ? JSON.stringify(command) : undefined,
+      headers,
+      body:
+        method === "POST"
+          ? JSON.stringify(options?.body ?? {})
+          : undefined,
     });
     if (!response.ok) {
       const payload: unknown = await response.json().catch(() => null);
-      const parsed = z.object({ error: z.string() }).safeParse(payload);
-      throw new Error(
-        parsed.success
-          ? parsed.data.error
-          : "无法连接当前终端，请在终端输入 /map",
-      );
+      const parsed = z
+        .object({
+          code: z.string().optional(),
+          message: z.string().optional(),
+          error: z.string().optional(),
+        })
+        .safeParse(payload);
+      const fallback = isMap
+        ? "无法连接当前终端，请在终端输入 /map"
+        : "服务请求失败，请检查服务状态后重试";
+      const message =
+        parsed.success && (parsed.data.message || parsed.data.error)
+          ? (parsed.data.message ?? parsed.data.error ?? fallback)
+          : fallback;
+      const err = new Error(message) as Error & {
+        code?: string;
+        status?: number;
+      };
+      err.code = parsed.success ? parsed.data.code : undefined;
+      err.status = response.status;
+      throw err;
     }
     const payload: unknown = await response.json();
     return payload;
+  }
+
+  async function request(path: string, command?: TopicCommand) {
+    return apiRequest(path, command ? { method: "POST", body: command } : undefined);
+  }
+
+  async function refreshServiceMeta() {
+    if (modeRef.current !== "service") return null;
+    const [rawState, rawSessions] = await Promise.all([
+      apiRequest("/api/state"),
+      apiRequest("/api/sessions"),
+    ]);
+    const nextState = stateSchema.parse(rawState);
+    const nextSessions = sessionListSchema.parse(rawSessions);
+    setServiceState(nextState);
+    setSessions(nextSessions.sessions);
+    if (nextState.notice) {
+      setModelNotice(nextState.notice);
+    }
+    if (nextState.active_run_id) {
+      const current = runStreamRef.current?.snapshot;
+      if (
+        !current ||
+        current.run_id !== nextState.active_run_id ||
+        !isTerminalRunStatus(current.status)
+      ) {
+        setSubscribedRunId((prev) => prev ?? nextState.active_run_id);
+      }
+    }
+    return nextState;
   }
 
   async function load(
@@ -123,6 +229,7 @@ export default function Home() {
       if (refresh) pendingRefresh.current = true;
       return;
     }
+    const isService = modeRef.current === "service";
     const previous = snapshotRef.current;
     const target = next ?? {
       session: view.current.session,
@@ -139,24 +246,49 @@ export default function Home() {
     loadingRevision.current = revision;
     setLoadingPage(true);
     try {
-      const params = new URLSearchParams();
-      if (target.topic) params.set("topic_id", target.topic);
-      if (target.before !== undefined)
-        params.set("before", String(target.before));
-      if (target.after !== undefined) params.set("after", String(target.after));
+      const buildSnapshotUrl = (opts: {
+        session?: string;
+        topic?: string;
+        before?: number;
+        after?: number;
+      }) => {
+        const params = new URLSearchParams();
+        if (isService && opts.session) params.set("session_id", opts.session);
+        if (opts.topic) params.set("topic_id", opts.topic);
+        if (opts.before !== undefined) params.set("before", String(opts.before));
+        if (opts.after !== undefined) params.set("after", String(opts.after));
+        const qs = params.toString();
+        return qs ? `/api/snapshot?${qs}` : "/api/snapshot";
+      };
+
       let data: unknown;
       try {
-        data = await request(`/api/snapshot?${params}`);
+        data = await request(buildSnapshotUrl(target));
       } catch (cause) {
-        if (!(cause instanceof Error) || cause.message !== "Unknown topic")
+        const apiErr = cause as Error & { code?: string; status?: number };
+        if (
+          apiErr.code === "session_not_active" ||
+          apiErr.code === "session_not_found" ||
+          apiErr.status === 409
+        ) {
+          data = await request("/api/snapshot");
+        } else if (
+          cause instanceof Error &&
+          cause.message === "Unknown topic"
+        ) {
+          data = await request(
+            buildSnapshotUrl({ session: target.session }),
+          );
+        } else {
           throw cause;
-        data = await request("/api/snapshot");
+        }
       }
       let parsed = snapshotSchema.parse(data);
       const replaced =
         oldSession !== undefined && oldSession !== parsed.session_id;
-      if (replaced)
+      if (replaced && (target.topic || target.before !== undefined || target.after !== undefined)) {
         parsed = snapshotSchema.parse(await request("/api/snapshot"));
+      }
       if (revision !== serial.current) return;
       const current = snapshotRef.current;
       const sameView =
@@ -181,6 +313,13 @@ export default function Home() {
         setCollapsed(new Set());
         setEditor({ kind: "closed" });
         setScrollTarget(null);
+        if (
+          runStreamRef.current &&
+          runStreamRef.current.snapshot.session_id !== merged.session_id
+        ) {
+          updateRunStream(null);
+          setSubscribedRunId(null);
+        }
       }
       setTabs((previous) => {
         const existing = replaced ? [] : previous;
@@ -211,48 +350,193 @@ export default function Home() {
   }
 
   async function jumpToLatest() {
-    const loaded = await load({ topic: snapshotRef.current?.viewed_topic_id });
+    const loaded = await load({
+      session: snapshotRef.current?.session_id,
+      topic: snapshotRef.current?.viewed_topic_id,
+    });
     if (loaded) setScrollTarget({ kind: "latest" });
   }
 
+  async function syncAfterRunSettled(finalRun: RunSnapshot) {
+    try {
+      await refreshServiceMeta();
+      await load();
+      if (
+        finalRun.status === "completed" &&
+        runStreamRef.current?.snapshot.run_id === finalRun.run_id
+      ) {
+        updateRunStream(null);
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "同步运行结果失败");
+    } finally {
+      setSubscribedRunId((prev) => (prev === finalRun.run_id ? null : prev));
+      sendBaselineSeq.current = null;
+    }
+  }
+
   useEffect(() => {
-    const fragment = new URLSearchParams(location.hash.slice(1));
-    const passed = fragment.get("token");
-    if (passed) {
-      sessionStorage.setItem("octo-map-token", passed);
-      history.replaceState(null, "", location.pathname);
-    }
-    token.current = passed ?? sessionStorage.getItem("octo-map-token") ?? "";
-    if (!token.current) {
-      setConnection({
-        kind: "disconnected",
-        reason: "在运行中的 Octo 终端输入 /map，即可连接当前会话。",
-      });
-      return;
-    }
     let disposed = false;
-    const stream = new EventSource(
-      `/api/events?token=${encodeURIComponent(token.current)}`,
-    );
-    stream.onmessage = () => {
-      if (!disposed) void load();
-    };
-    stream.onerror = () => {
-      if (!disposed)
-        setConnection({
-          kind: "disconnected",
-          reason: "终端连接已断开，正在重新连接…",
-        });
-    };
-    void load();
+    let mapStream: EventSource | null = null;
+
+    async function bootstrap() {
+      const fragment = new URLSearchParams(location.hash.slice(1));
+      const passed = fragment.get("token");
+      if (passed) {
+        sessionStorage.setItem("octo-map-token", passed);
+        history.replaceState(null, "", location.pathname);
+        token.current = passed;
+        modeRef.current = "map";
+        setTransportMode("map");
+      } else {
+        let detectedService = false;
+        try {
+          const response = await fetch("/api/health", {
+            cache: "no-store",
+            credentials: "same-origin",
+            redirect: "error",
+          });
+          if (response.ok) {
+            const parsed = healthSchema.safeParse(await response.json());
+            if (parsed.success && parsed.data.ok) {
+              detectedService = true;
+            }
+          }
+        } catch {
+          detectedService = false;
+        }
+        if (disposed) return;
+
+        if (detectedService) {
+          modeRef.current = "service";
+          setTransportMode("service");
+        } else {
+          const stored = sessionStorage.getItem("octo-map-token") ?? "";
+          if (!stored) {
+            modeRef.current = "map";
+            setTransportMode("map");
+            setConnection({
+              kind: "disconnected",
+              reason: "无法连接 Octo 服务，或在运行中的终端输入 /map 连接当前会话。",
+            });
+            return;
+          }
+          token.current = stored;
+          modeRef.current = "map";
+          setTransportMode("map");
+        }
+      }
+
+      if (disposed) return;
+      const isService = modeRef.current === "service";
+      mapStream = new EventSource(
+        isService
+          ? "/api/events"
+          : `/api/events?token=${encodeURIComponent(token.current)}`,
+      );
+      mapStream.onmessage = () => {
+        if (disposed) return;
+        if (isService) {
+          void refreshServiceMeta().catch(() => {});
+        }
+        void load();
+      };
+      mapStream.onerror = () => {
+        if (!disposed) {
+          setConnection({
+            kind: "disconnected",
+            reason: isService
+              ? "连接中断，服务端可能仍在运行"
+              : "终端连接已断开，正在重新连接…",
+          });
+        }
+      };
+
+      if (isService) {
+        await refreshServiceMeta().catch(() => {});
+      }
+      await load();
+    }
+
+    void bootstrap();
     return () => {
       disposed = true;
       ++serial.current;
       loadingRevision.current = 0;
       pendingRefresh.current = false;
-      stream.close();
+      mapStream?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (transportMode !== "service" || !subscribedRunId) return;
+    let disposed = false;
+    const runId = subscribedRunId;
+    const stream = new EventSource(
+      `/api/runs/${encodeURIComponent(runId)}/events`,
+    );
+
+    const handleRunEvent = (event: MessageEvent<string>) => {
+      if (disposed) return;
+      let envelope;
+      try {
+        envelope = runEventEnvelopeSchema.parse(JSON.parse(event.data));
+      } catch {
+        return;
+      }
+      const next = applyRunEvent(runStreamRef.current, envelope);
+      if (!next) return;
+      updateRunStream(next);
+      setConnection({ kind: "connected" });
+      if (
+        envelope.kind === "run_status" &&
+        isTerminalRunStatus(next.snapshot.status)
+      ) {
+        stream.close();
+        void syncAfterRunSettled(next.snapshot);
+      }
+    };
+
+    stream.addEventListener("run_event", handleRunEvent as EventListener);
+    stream.onerror = () => {
+      if (disposed) return;
+      setConnection({
+        kind: "disconnected",
+        reason: "连接中断，服务端可能仍在运行",
+      });
+      void fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+      })
+        .then(async (res) => {
+          if (disposed) return;
+          if (res.status === 404) {
+            stream.close();
+            updateRunStream(null);
+            setSubscribedRunId(null);
+            setError("服务已重启，运行状态未保留，已刷新历史记录核对结果。");
+            await refreshServiceMeta().catch(() => {});
+            await load();
+            return;
+          }
+          if (res.ok) {
+            const snap = runSnapshotSchema.parse(await res.json());
+            updateRunStream(createRunStreamState(snap));
+            if (isTerminalRunStatus(snap.status)) {
+              stream.close();
+              await syncAfterRunSettled(snap);
+            }
+          }
+        })
+        .catch(() => {});
+    };
+
+    return () => {
+      disposed = true;
+      stream.removeEventListener("run_event", handleRunEvent as EventListener);
+      stream.close();
+    };
+  }, [transportMode, subscribedRunId]);
 
   useEffect(() => {
     if (!frame.current) return;
@@ -302,11 +586,12 @@ export default function Home() {
     )
       return;
     const topic = snapshot.viewed_topic_id,
-      after = snapshot.after;
+      after = snapshot.after,
+      sess = snapshot.session_id;
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting))
-          void load({ topic, after }, false, "newer");
+          void load({ session: sess, topic, after }, false, "newer");
       },
       { root: recordsPane.current, rootMargin: "0px 0px 160px 0px" },
     );
@@ -330,19 +615,25 @@ export default function Home() {
 
   async function locate(entry: Message["id"]) {
     try {
+      const params = new URLSearchParams({ entry_id: entry });
+      if (modeRef.current === "service" && snapshotRef.current?.session_id) {
+        params.set("session_id", snapshotRef.current.session_id);
+      }
       const anchor = z
         .object({
           topic_id: topicId,
           seq: z.number().int(),
           entry_id: z.string(),
         })
-        .parse(
-          await request("/api/anchor?entry_id=" + encodeURIComponent(entry)),
-        );
+        .parse(await request("/api/anchor?" + params.toString()));
       setMobile("records");
       setScrollTarget(null);
       const loaded = await load(
-        { topic: anchor.topic_id, before: anchor.seq + 1 },
+        {
+          session: snapshotRef.current?.session_id,
+          topic: anchor.topic_id,
+          before: anchor.seq + 1,
+        },
         true,
       );
       if (loaded) setScrollTarget({ kind: "entry", id: anchor.entry_id });
@@ -364,6 +655,35 @@ export default function Home() {
   const current = snapshot?.topics.find(
     (topic) => topic.id === snapshot.selected_topic_id,
   );
+  const activeRun = runStream?.snapshot ?? null;
+  const activeRunTopic = snapshot?.topics.find(
+    (topic) =>
+      topic.id === (activeRun?.topic_id ?? snapshot.active_topic_id),
+  );
+  const isServiceMode = transportMode === "service";
+  const isRunRunning = Boolean(
+    (activeRun && !isTerminalRunStatus(activeRun.status)) ||
+      snapshot?.running ||
+      serviceState?.running,
+  );
+  const showLiveCard = Boolean(
+    isServiceMode &&
+      activeRun &&
+      snapshot &&
+      activeRun.session_id === snapshot.session_id &&
+      activeRun.topic_id === selected?.id,
+  );
+  const showProvisionalUser = Boolean(
+    showLiveCard &&
+      activeRun &&
+      sendBaselineSeq.current !== null &&
+      !snapshot?.messages.some(
+        (message) =>
+          message.seq > (sendBaselineSeq.current ?? 0) &&
+          message.role === "user" &&
+          message.text === activeRun.user_text,
+      ),
+  );
   const split = width >= 780;
   const maxWidth = Math.max(260, Math.min(640, width - 390));
   const panelWidth = Math.max(260, Math.min(treeWidth, maxWidth));
@@ -378,7 +698,10 @@ export default function Home() {
         .parse(await request("/api/topics", body));
       setEditor({ kind: "closed" });
       setMobile("records");
-      await load({ topic: target ?? result.topic_id }, true);
+      await load(
+        { session: body.session_id, topic: target ?? result.topic_id },
+        true,
+      );
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "操作失败，请刷新检查结果",
@@ -387,6 +710,7 @@ export default function Home() {
       setBusy(false);
     }
   }
+
   async function activateTopic(
     id: TopicId,
     entry: Message["id"] | null = null,
@@ -401,6 +725,7 @@ export default function Home() {
     if (entry) await locate(entry);
     else setScrollTarget({ kind: "latest" });
   }
+
   function create(anchor: Message["id"] | null = null) {
     if (!selected || !snapshot) return;
     const number = snapshot.topics.length;
@@ -421,6 +746,136 @@ export default function Home() {
     });
   }
 
+  async function switchSession(targetSessionId: Snapshot["session_id"]) {
+    if (!isServiceMode || busy || isRunRunning) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = sessionActionSchema.parse(
+        await apiRequest(
+          `/api/sessions/${encodeURIComponent(targetSessionId)}/activate`,
+          { method: "POST", body: {} },
+        ),
+      );
+      setServiceState(result.state);
+      setModelNotice(result.notice);
+      updateRunStream(null);
+      setSubscribedRunId(null);
+      setTabs([]);
+      setCollapsed(new Set());
+      setScrollTarget(null);
+      await refreshServiceMeta();
+      await load({ session: result.state.session_id });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "切换会话失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createNewSession() {
+    if (!isServiceMode || busy || isRunRunning) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = sessionActionSchema.parse(
+        await apiRequest("/api/sessions", { method: "POST", body: {} }),
+      );
+      setServiceState(result.state);
+      setModelNotice(result.notice);
+      updateRunStream(null);
+      setSubscribedRunId(null);
+      setTabs([]);
+      setCollapsed(new Set());
+      setScrollTarget(null);
+      await refreshServiceMeta();
+      await load({ session: result.state.session_id });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "新建会话失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendMessage() {
+    if (!isServiceMode || !snapshot || !selected || isRunRunning || sending) {
+      return;
+    }
+    const text = draft;
+    if (!text.trim()) return;
+    setSending(true);
+    setError("");
+    const clientRequestId = generateClientRequestId();
+    try {
+      const accepted = runAcceptedSchema.parse(
+        await apiRequest(
+          `/api/sessions/${encodeURIComponent(snapshot.session_id)}/runs`,
+          {
+            method: "POST",
+            body: {
+              client_request_id: clientRequestId,
+              topic_id: selected.id,
+              text,
+            },
+          },
+        ),
+      );
+      setDraft("");
+      const nowSeconds = Date.now() / 1000;
+      const initialRun: RunSnapshot = {
+        run_id: accepted.run_id,
+        client_request_id: accepted.client_request_id,
+        session_id: accepted.session_id,
+        topic_id: accepted.topic_id,
+        status: accepted.status,
+        seq: 0,
+        user_text: text,
+        assistant_text: "",
+        thinking_text: "",
+        committed_assistant_text: "",
+        committed_thinking_text: "",
+        tool_executions: [],
+        error_code: null,
+        error_message: null,
+        created_at: nowSeconds,
+        updated_at: nowSeconds,
+        finished_at: null,
+      };
+      updateRunStream(createRunStreamState(initialRun));
+      sendBaselineSeq.current = snapshot.after ?? 0;
+      setSubscribedRunId(accepted.run_id);
+      if (snapshot.has_newer || highlight) {
+        await jumpToLatest();
+      } else {
+        setScrollTarget({ kind: "latest" });
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "发送失败");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function cancelActiveRun() {
+    const runId = activeRun?.run_id ?? serviceState?.active_run_id;
+    if (!isServiceMode || !runId || cancelling) return;
+    setCancelling(true);
+    setError("");
+    try {
+      const snap = runSnapshotSchema.parse(
+        await apiRequest(`/api/runs/${encodeURIComponent(runId)}/cancel`, {
+          method: "POST",
+          body: {},
+        }),
+      );
+      updateRunStream(createRunStreamState(snap));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "停止生成失败");
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   async function copy(message: Message) {
     try {
       await navigator.clipboard.writeText(message.text);
@@ -428,6 +883,13 @@ export default function Home() {
     } catch {
       setError("复制失败，可选中消息正文手动复制。");
     }
+  }
+
+  async function refreshAll() {
+    if (modeRef.current === "service") {
+      await refreshServiceMeta().catch(() => {});
+    }
+    await load();
   }
 
   return (
@@ -442,9 +904,75 @@ export default function Home() {
         </div>
         <div className="session-strip" title={snapshot?.title}>
           <Terminal size={17} />
-          <strong>{snapshot?.title ?? "连接你的终端会话"}</strong>
-          <span>终端当前：{current?.title ?? "—"}</span>
-          {snapshot?.running && (
+          {isServiceMode ? (
+            <>
+              <button
+                className="session-picker-trigger"
+                aria-label="切换或新建会话"
+                aria-haspopup="menu"
+                popoverTarget="session-picker"
+                disabled={!connected || busy || !snapshot}
+              >
+                <strong>{snapshot?.title ?? "加载会话中"}</strong>
+                <ChevronDown size={13} />
+              </button>
+              <div
+                ref={sessionMenu}
+                id="session-picker"
+                className="topic-options session-options"
+                popover="auto"
+                role="menu"
+                aria-label="会话列表"
+              >
+                <button
+                  className="session-create-item"
+                  disabled={busy || isRunRunning || !connected}
+                  onClick={() => {
+                    sessionMenu.current?.hidePopover();
+                    void createNewSession();
+                  }}
+                >
+                  <span>
+                    <Plus size={14} /> 新建会话
+                  </span>
+                </button>
+                {sessions.map((item) => (
+                  <button
+                    key={item.id}
+                    role="menuitemradio"
+                    aria-checked={item.id === snapshot?.session_id}
+                    disabled={
+                      busy ||
+                      (isRunRunning && item.id !== snapshot?.session_id)
+                    }
+                    onClick={() => {
+                      sessionMenu.current?.hidePopover();
+                      if (item.id !== snapshot?.session_id) {
+                        void switchSession(item.id);
+                      }
+                    }}
+                  >
+                    <span>
+                      {item.title} · <small>{item.model}</small>
+                    </span>
+                    {item.id === snapshot?.session_id && <Check size={14} />}
+                  </button>
+                ))}
+              </div>
+              {serviceState && (
+                <span className="model-pill" title={serviceState.provider_name}>
+                  {serviceState.model_display_name}
+                </span>
+              )}
+              <span>当前话题：{current?.title ?? "—"}</span>
+            </>
+          ) : (
+            <>
+              <strong>{snapshot?.title ?? "连接你的终端会话"}</strong>
+              <span>终端当前：{current?.title ?? "—"}</span>
+            </>
+          )}
+          {isRunRunning && (
             <span className="running">
               <i />
               正在生成
@@ -455,15 +983,17 @@ export default function Home() {
           <span className={`connection ${connected ? "online" : ""}`}>
             <i />
             {connected
-              ? "已连接终端"
+              ? isServiceMode
+                ? "已连接服务"
+                : "已连接终端"
               : connection.kind === "connecting"
                 ? "正在连接"
-                : "未连接"}
+                : "连接中断"}
           </span>
           <button
             className="icon-button"
             aria-label="刷新话题"
-            onClick={() => void load()}
+            onClick={() => void refreshAll()}
           >
             <RefreshCw size={17} />
           </button>
@@ -479,7 +1009,15 @@ export default function Home() {
       {connection.kind === "disconnected" && (
         <div className="notice" role="status">
           {connection.reason}
-          <button onClick={() => void load()}>重新连接</button>
+          <button onClick={() => void refreshAll()}>重新连接</button>
+        </div>
+      )}
+      {modelNotice && (
+        <div className="notice" role="status">
+          <span>{modelNotice}</span>
+          <button aria-label="关闭模型提示" onClick={() => setModelNotice(null)}>
+            <X size={16} />
+          </button>
         </div>
       )}
       {error && editor.kind === "closed" && (
@@ -612,7 +1150,7 @@ export default function Home() {
             className="new-branch"
             disabled={!connected || busy || !selected}
             onClick={() => create()}
-            title="从正在查看的话题创建，并切换终端"
+            title="从正在查看的话题创建并切换"
           >
             <Plus size={14} />
             新建分支
@@ -767,9 +1305,14 @@ export default function Home() {
                                 ? "未产生对话"
                                 : "共享会话"}
                             {snapshot?.selected_topic_id === topic.id &&
-                              isLatest && <em>终端当前</em>}
-                            {snapshot?.running &&
-                              snapshot.active_topic_id === topic.id && (
+                              isLatest && (
+                                <em>
+                                  {isServiceMode ? "当前选中" : "终端当前"}
+                                </em>
+                              )}
+                            {isRunRunning &&
+                              (activeRun?.topic_id ??
+                                snapshot?.active_topic_id) === topic.id && (
                                 <em className="running">
                                   <i />
                                   生成中
@@ -786,7 +1329,9 @@ export default function Home() {
               <div className="empty-small">
                 {snapshot
                   ? "没有找到这个话题"
-                  : "在终端输入 /map，查看真实话题。"}
+                  : isServiceMode
+                    ? "正在加载会话话题…"
+                    : "在终端输入 /map，查看真实话题。"}
               </div>
             )}
           </nav>
@@ -892,7 +1437,9 @@ export default function Home() {
                 >
                   <ArrowUpRight size={16} />
                   {selected.id === snapshot.selected_topic_id
-                    ? "终端当前话题"
+                    ? isServiceMode
+                      ? "当前话题"
+                      : "终端当前话题"
                     : "在此继续"}
                 </button>
               </div>
@@ -926,6 +1473,7 @@ export default function Home() {
                 onClick={() =>
                   void load(
                     {
+                      session: snapshot.session_id,
                       topic: snapshot.viewed_topic_id,
                       before: snapshot.before ?? undefined,
                     },
@@ -996,20 +1544,115 @@ export default function Home() {
                   </div>
                 </article>
               ))
-            ) : (
+            ) : !showLiveCard ? (
               <div className="empty-records">
                 <OctoMark />
                 <h3>
                   {selected
                     ? "这里，留给新的想法"
-                    : "终端负责行动，地图整理思路"}
+                    : "用地图整理思路，在此继续对话"}
                 </h3>
                 <p>
-                  {selected
-                    ? "回到终端，直接沿当前主线提问。"
-                    : "模型、工具和配置都留在终端。"}
+                  {isServiceMode
+                    ? "在下方输入问题，立即沿当前话题开始对话。"
+                    : selected
+                      ? "回到终端，直接沿当前主线提问。"
+                      : "模型、工具和配置都留在终端。"}
                 </p>
               </div>
+            ) : null}
+            {showProvisionalUser && activeRun && (
+              <article className="message role-user">
+                <div className="message-meta">
+                  <strong>你</strong>
+                  <span>发送中</span>
+                </div>
+                <div className="message-text">{activeRun.user_text}</div>
+              </article>
+            )}
+            {showLiveCard && activeRun && (
+              <article
+                className={`message live-run status-${activeRun.status}`}
+                aria-live="polite"
+              >
+                <div className="message-meta">
+                  <strong>Octo</strong>
+                  <span className="live-status-pill">
+                    {activeRun.status === "starting"
+                      ? "正在准备…"
+                      : activeRun.status === "running"
+                        ? "正在生成…"
+                        : activeRun.status === "cancelling"
+                          ? "正在停止…"
+                          : activeRun.status === "cancelled"
+                            ? "已停止生成"
+                            : activeRun.status === "failed"
+                              ? "生成失败"
+                              : "已完成"}
+                  </span>
+                  <code>{activeRun.run_id.slice(0, 8)}</code>
+                  {isTerminalRunStatus(activeRun.status) && (
+                    <button
+                      className="dismiss-live"
+                      aria-label="关闭运行状态"
+                      onClick={() => updateRunStream(null)}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                {activeRun.thinking_text && (
+                  <details className="live-details">
+                    <summary>思考过程</summary>
+                    <pre className="live-pre">{activeRun.thinking_text}</pre>
+                  </details>
+                )}
+                {activeRun.tool_executions.length > 0 && (
+                  <div className="live-tools">
+                    {activeRun.tool_executions.map((tool) => (
+                      <details
+                        className={`live-tool tool-${tool.status}`}
+                        key={tool.tool_call_id}
+                      >
+                        <summary>
+                          <Wrench size={13} />
+                          <span>{tool.tool_name}</span>
+                          <em>
+                            {tool.status === "running"
+                              ? "执行中"
+                              : tool.status === "error"
+                                ? "出错"
+                                : "完成"}
+                          </em>
+                        </summary>
+                        <div className="live-tool-body">
+                          <pre className="live-pre">
+                            {JSON.stringify(tool.args, null, 2)}
+                          </pre>
+                          {(tool.result_text || tool.partial_text) && (
+                            <pre className="live-pre">
+                              {tool.result_text || tool.partial_text}
+                            </pre>
+                          )}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                )}
+                {activeRun.assistant_text ? (
+                  <MessageContent
+                    role="assistant"
+                    text={activeRun.assistant_text}
+                  />
+                ) : !isTerminalRunStatus(activeRun.status) ? (
+                  <p className="live-placeholder">等待模型响应…</p>
+                ) : null}
+                {activeRun.error_message && (
+                  <p className="form-error" role="alert">
+                    {activeRun.error_message}
+                  </p>
+                )}
+              </article>
             )}
             {snapshot?.has_newer && snapshot.after !== null && (
               <div ref={newerSentinel} className="newer-page">
@@ -1019,6 +1662,7 @@ export default function Home() {
                   onClick={() =>
                     void load(
                       {
+                        session: snapshot.session_id,
                         topic: snapshot.viewed_topic_id,
                         after: snapshot.after ?? undefined,
                       },
@@ -1032,11 +1676,83 @@ export default function Home() {
               </div>
             )}
           </div>
-          <footer className="record-footer">
-            <Terminal size={15} />
-            <span>在终端提问与查看生成过程</span>
-            <span className="shared-note">同一会话共享历史</span>
-          </footer>
+          {isServiceMode ? (
+            <footer className="composer">
+              <div className="composer-meta">
+                <span>
+                  发送目标：{selected?.branch_label ?? "主干"} ·{" "}
+                  <strong>{selected?.title ?? "主线"}</strong>
+                </span>
+                {isRunRunning &&
+                  activeRunTopic &&
+                  activeRunTopic.id !== selected?.id && (
+                    <span className="other-topic-run">
+                      正在「{activeRunTopic.title}」生成中
+                      <button
+                        type="button"
+                        onClick={() => void activateTopic(activeRunTopic.id)}
+                      >
+                        切回查看
+                      </button>
+                    </span>
+                  )}
+                <span className="shared-note">同一会话共享历史</span>
+              </div>
+              <div className="composer-row">
+                <textarea
+                  aria-label="输入消息"
+                  rows={2}
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      void sendMessage();
+                    }
+                  }}
+                  placeholder={
+                    selected
+                      ? `向「${selected.title}」提问（Enter 发送，Shift+Enter 换行）…`
+                      : "等待加载话题…"
+                  }
+                  disabled={!connected || !selected}
+                />
+                {isRunRunning ? (
+                  <button
+                    type="button"
+                    className="stop-button"
+                    disabled={cancelling || !(activeRun?.run_id ?? serviceState?.active_run_id)}
+                    onClick={() => void cancelActiveRun()}
+                  >
+                    <Square size={14} />
+                    {cancelling ? "正在停止" : "停止"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="primary send-button"
+                    disabled={
+                      !connected || !selected || sending || !draft.trim()
+                    }
+                    onClick={() => void sendMessage()}
+                  >
+                    <Send size={14} />
+                    {sending ? "发送中" : "发送"}
+                  </button>
+                )}
+              </div>
+            </footer>
+          ) : (
+            <footer className="record-footer">
+              <Terminal size={15} />
+              <span>在终端提问与查看生成过程</span>
+              <span className="shared-note">同一会话共享历史</span>
+            </footer>
+          )}
         </section>
       </div>
       <dialog
