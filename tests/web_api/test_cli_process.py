@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import subprocess
 import sys
@@ -35,7 +36,8 @@ class OctoWebCliProcessTests(unittest.TestCase):
         runner = CliRunner()
         result = runner.invoke(cli_app, ["--host", "0.0.0.0"])
         self.assertEqual(result.exit_code, 2)
-        self.assertIn("--allow-non-loopback", result.output)
+        plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", result.output)
+        self.assertIn("--allow-non-loopback", plain)
 
     @unittest.skipUnless(_STATIC_INDEX.is_file(), "请先构建 web/out/index.html")
     def test_octo_web_process_serves_static_build_and_enforces_boundaries(self) -> None:

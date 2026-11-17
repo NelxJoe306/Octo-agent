@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -205,9 +206,10 @@ class WebApiRuntimeAndHttpTests(unittest.IsolatedAsyncioTestCase):
         runner = CliRunner()
         result = runner.invoke(cli_app, ["--help"])
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("--host", result.output)
-        self.assertIn("--port", result.output)
-        self.assertIn("--cwd", result.output)
+        plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", result.output)
+        self.assertIn("--host", plain)
+        self.assertIn("--port", plain)
+        self.assertIn("--cwd", plain)
 
     async def test_headless_tool_loop_persists_to_sqlite_and_reopens(self) -> None:
         async def exec_echo(call_id: str, arguments: dict, signal=None, on_update=None):
