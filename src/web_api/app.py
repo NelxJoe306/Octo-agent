@@ -29,6 +29,7 @@ from web_api.schemas import (
 )
 
 _MAX_WRITE_BODY_BYTES = 262144
+_TERMINAL_RUN_STATUSES = frozenset({"completed", "cancelled", "failed"})
 _DEFAULT_ALLOWED_ORIGINS = (
     "http://127.0.0.1:18300",
     "http://localhost:18300",
@@ -350,7 +351,10 @@ def create_app(
                     if envelope.seq <= snapshot.seq:
                         continue
                     yield _format_sse("run_event", envelope.model_dump_json())
-                    if envelope.kind == "run_status":
+                    if (
+                        envelope.kind == "run_status"
+                        and envelope.payload.get("status") in _TERMINAL_RUN_STATUSES
+                    ):
                         break
             finally:
                 unsubscribe()

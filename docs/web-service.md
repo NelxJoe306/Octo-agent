@@ -14,7 +14,8 @@
   -> CodingSession（复用现有 Agent Loop、Context Harness、模型适配、SQLite 与长期记忆）
 ```
 
-- **权限与隔离边界**：服务以普通用户 `octo` 运行，`--cwd`（如 `/home/octo/workspace`）是工具执行起始目录，不提供容器级或多租户沙盒隔离；公网访问前必须经过反向代理整站认证。
+- **权限与隔离边界**：服务以普通用户 `octo` 运行，`--cwd`（如 `/home/octo/workspace`）是工具执行起始目录，不提供容器级或多租户沙盒隔离；`octo-web` 默认仅允许绑定回环地址（如 `127.0.0.1`），直接传入 `--host 0.0.0.0` 会被默认拒绝（需显式 `--allow-non-loopback` 才会放开），因为应用层不内置账号认证，公网访问必须经过 Caddy HTTPS + Basic Auth 整站认证。
+- **取消保活语义**：`POST /api/runs/{run_id}/cancel` 触发 `cancelling` 状态广播时，`/api/runs/{run_id}/events` SSE 连接保持打开，直到后台 driver 完成清理和持久化并推送 `cancelled` / `completed` / `failed` 终态事件后再正常结束流。
 - **单活动会话并发约定**：一个进程同时仅持有一个活动 `CodingSession` 和一个前台运行任务。生成期间允许查看或新建/重命名话题，再次提交普通消息返回 `409 agent_busy`，忙碌时切换或新建会话返回 `409 agent_busy`。
 - **双模式前端兼容**：不带 `#token=` 打开页面时自动探测 `GET /api/health` 进入 `service` 模式；终端输入 `/map` 打开的 `#token=...` 链接继续走原有只读 `map` 协议，隐藏聊天输入框。
 - **不做的范围**：不实现多用户、远程 TUI 同步、任意项目目录选择器、浏览器 Shell、模型市场、API Key 导入、Redis/Celery/Kubernetes 或数据库 schema 迁移（继续使用 schema 6）。
@@ -24,8 +25,8 @@
 从仓库根目录执行：
 
 ```bash
-# 安装包含 FastAPI 与 Uvicorn 的 Web 运行依赖
-uv pip install --python dependencies/python/.venv/bin/python -e ".[web]"
+# 安装 Python 依赖（fastapi 与 uvicorn 已包含在主依赖中，也兼容 -e ".[web]"）
+python3 tools/install_dependencies.py --python-only
 
 # 安装前端依赖并导出静态页面到 web/out
 python3 tools/install_dependencies.py --web-only

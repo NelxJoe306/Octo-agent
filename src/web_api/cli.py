@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ipaddress import ip_address
 from os import environ
 from pathlib import Path
 from typing import Annotated
@@ -12,6 +13,16 @@ from web_api.app import create_app
 from web_api.runtime import WebRuntime, WebRuntimeConfig
 
 cli_app = typer.Typer(add_completion=False, no_args_is_help=False)
+
+
+def _is_loopback_host(host: str) -> bool:
+    cleaned = host.strip().strip("[]").lower()
+    if cleaned == "localhost":
+        return True
+    try:
+        return ip_address(cleaned).is_loopback
+    except ValueError:
+        return False
 
 
 def _split_csv_env(name: str) -> list[str]:
@@ -68,7 +79,17 @@ def serve(
     allowed_origin: Annotated[list[str] | None, typer.Option("--allowed-origin", help="允许的外部 Origin，可重复指定")] = None,
     trusted_proxy: Annotated[list[str] | None, typer.Option("--trusted-proxy", help="可信代理 IP，可重复指定")] = None,
     graceful_timeout: Annotated[int, typer.Option("--graceful-timeout", envvar="OCTO_WEB_GRACEFUL_TIMEOUT", help="优雅停机超时秒数")] = 15,
+    allow_non_loopback: Annotated[bool, typer.Option("--allow-non-loopback", envvar="OCTO_WEB_ALLOW_NON_LOOPBACK", help="允许绑定非回环地址（仅在独立隔离网络且上游代理已鉴权时使用）")] = False,
 ) -> None:
+    if not _is_loopback_host(host):
+        if not allow_non_loopback:
+            typer.echo(
+                "拒绝直接绑定非回环地址：应用层无内置 Basic Auth，请保持 --host 127.0.0.1 并经 Caddy 等反向代理认证；"
+                "若处于受控隔离内网并确需放开，请显式传入 --allow-non-loopback。",
+                err=True,
+            )
+            raise typer.Exit(2)
+        typer.echo("警告：当前以非回环地址监听，请确保上游代理已启用 HTTPS 与访问认证。", err=True)
     resolved_cwd = (cwd or Path.cwd()).expanduser().resolve()
     if not resolved_cwd.is_dir():
         typer.echo(f"工作目录不存在: {resolved_cwd}", err=True)

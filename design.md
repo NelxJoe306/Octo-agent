@@ -320,7 +320,7 @@ Web 提供搜索、折叠、缩放、拖拽、记录查看、新建/重命名话
 
 SQLite schema 2 增加 topics、topic_selection、topic_requests、entry_requests。旧正文保持不可变；无关联旧消息展示在主线。新增话题表的恢复以 SQLite 为准，旧 JSONL 不携带这些元数据。完整压缩门控已于 2026-11-14 接入，后台记忆提炼与偏好召回已接入，通用事实适用范围仍待确认。
 
-详细设计、实现位置、运行方法及范围见 [话题地图设计](web/docs/topic-map.md)、[运行说明](web/README.md) 与 [Web 服务运维说明](docs/web-service.md)。早期 Web 预览记录留作历史，不再描述当前功能。
+详细设计、话题树交互与双模式运行说明见 [话题地图设计](web/docs/topic-map.md)、[Web 使用说明](web/README.md) 与 [Web 服务运维说明](docs/web-service.md)；根目录 `README.md` 按交接约定保留给用户自行维护。早期 Web 预览记录留作历史，不再描述当前功能。
 
 2026-11-17 交接修订（单用户 FastAPI Web 服务）：新增独立 `src/web_api` 包与 `octo-web` 入口，围绕 `WebRuntime` 持有单活动 `CodingSession` 与单前台异步 driver；浏览器断开不取消运行，请求接收时冻结 `topic_id` 与 `client_request_id` 去重，提供 `/api/sessions`、`/api/runs`、`/api/runs/{run_id}/events`（SSE 先快照再增量与结束状态）与停止接口。前端在既有话题地图页面补会话切换/新建、当前话题发送框、停止按钮与断连重连快照替换，同时保留旧 `/map` `#token=` 只读协议和终端主入口；不恢复项目选择、模型管理或完整桌面工作台。
 
@@ -441,4 +441,4 @@ Python 迁入 src 布局：agent_core 负责核心协议/会话基础，model_ad
 
 ### 2026-11-17：单用户 FastAPI Web 服务与最小聊天入口
 
-按交接文档在独立分支 `feat/fastapi-web-service` 分三个切片完成实施：`pyproject.toml` 新增 `web` 可选依赖（FastAPI/Uvicorn）和 `octo-web` 脚本入口；新增 `src/web_api`（`schemas.py`、`runtime.py`、`app.py`、`cli.py`）封装 `WebRuntime` 单活动会话持有、后台 driver 生命周期、同源 Host/Origin/Content-Type/可信代理校验及静态目录边界；前端 `web/lib/topic-map.ts`、`web/app/page.tsx`、`web/app/globals.css` 保留原有树布局和 `/map` 只读兼容，在 `service` 模式下补充轻量会话切换/新建、当前话题输入发送、流式工具/正文展示、停止生成与断连快照替换；交付 `deploy/octo-web.service`、`deploy/Caddyfile.example`、`deploy/web.env.example` 与 `docs/web-service.md`。本地通过 `tools/verify.py`、全量 `unittest`（含真实本地 Uvicorn + Basic Auth 流式代理及真实 `octo-web` 子进程校验）与前端 `npm test` / `typecheck` / `build`；ECS (`47.97.86.80:22`) 因 SSH 在握手阶段被远端关闭且未提供外部域名，尚未执行云端部署和真实 DeepSeek 冒烟。
+按交接文档在独立分支 `feat/fastapi-web-service` 分三个切片完成实施：`pyproject.toml` 纳入 `fastapi`/`uvicorn`（保留 `[web]` 兼容 extra）与 `octo-web` 脚本入口；新增 `src/web_api`（`schemas.py`、`runtime.py`、`app.py`、`cli.py`）封装 `WebRuntime` 单活动会话持有、后台 driver 生命周期、同源 Host/Origin/Content-Type/可信代理校验、取消态 SSE 保活至终态及 `--host` 非回环护栏；前端 `web/lib/topic-map.ts`、`web/app/page.tsx`、`web/app/globals.css` 保留原有树布局和 `/map` 只读兼容，在 `service` 模式下补充轻量会话切换/新建、当前话题输入发送、流式工具/正文展示、停止生成与断连快照替换；交付 `deploy/octo-web.service`、`deploy/Caddyfile.example`、`deploy/web.env.example` 与 `docs/web-service.md`，并同步更新 `.github/workflows/ci.yml`、`tools/install_dependencies.py`、`web/README.md` 与 `web/docs/topic-map.md`（不改根目录 `README.md`）。本地通过 `tools/verify.py`、全量 `unittest`（含真实本地 Uvicorn 取消保活/断连重连/Basic Auth 流式代理及真实 `octo-web` 子进程校验）与前端 `npm test` / `typecheck` / `build`；ECS (`47.97.86.80:22`) 因 SSH 在握手阶段被远端关闭且未提供外部域名，尚未执行云端部署和真实 DeepSeek 冒烟。

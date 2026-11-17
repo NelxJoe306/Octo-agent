@@ -19,6 +19,7 @@ from agent_core.messages import AssistantMessage
 from agent_core.provider import CancellationToken
 from agent_core.provider_events import (
     AssistantDoneEvent,
+    AssistantErrorEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
     TextDeltaEvent,
@@ -96,6 +97,62 @@ class TwoStageStreamingProvider:
                 yield TextDeltaEvent(content_index=0, delta=step, partial=partial)
             done = AssistantMessage(content=text, model=model, stop_reason="stop")
             yield AssistantDoneEvent(reason="stop", message=done)
+
+        return iterator()
+
+    async def aclose(self) -> None:
+        pass
+
+
+class SlowCancelProvider:
+    def __init__(self) -> None:
+        self._request_output_tokens = DEFAULT_REQUEST_OUTPUT_TOKENS
+        self.allow_stage1 = asyncio.Event()
+        self.cancel_observed = asyncio.Event()
+        self.finish_cancel = asyncio.Event()
+
+    def request_token_budget(self) -> RequestTokenBudget:
+        return RequestTokenBudget(self._request_output_tokens)
+
+    def configure_request_budget(
+        self,
+        *,
+        context_window: int,
+        safety_margin: int,
+        output_override: int | None = None,
+        model_max_output_tokens: int | None = None,
+    ) -> RequestTokenBudget:
+        self._request_output_tokens = DEFAULT_REQUEST_OUTPUT_TOKENS if output_override is None else output_override
+        return self.request_token_budget()
+
+    def stream_response(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: list[object],
+        tools: list[object],
+        signal: CancellationToken | None = None,
+        session_id: str | None = None,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        async def iterator() -> AsyncIterator[AssistantMessageEvent]:
+            await self.allow_stage1.wait()
+            partial = AssistantMessage(content="working", model=model, stop_reason="stop")
+            yield AssistantStartEvent(partial=AssistantMessage(content="", model=model, stop_reason="stop"))
+            yield TextDeltaEvent(content_index=0, delta="working", partial=partial)
+            while True:
+                if signal is not None and signal.is_cancelled():
+                    self.cancel_observed.set()
+                    await self.finish_cancel.wait()
+                    aborted = AssistantMessage(
+                        content=[],
+                        model=model,
+                        stop_reason="aborted",
+                        error_message="Aborted after cleanup",
+                    )
+                    yield AssistantErrorEvent(reason="aborted", error=aborted)
+                    return
+                await asyncio.sleep(0.01)
 
         return iterator()
 
@@ -262,7 +319,14 @@ class RealHttpSseAndProxyTests(unittest.IsolatedAsyncioTestCase):
         self.home = self.base / "home"
         self.cwd = self.base / "workspace"
         self.cwd.mkdir(parents=True)
-        self.static_dir = Path(__file__).resolve().parents[2] / "web" / "out"
+        built_static = Path(__file__).resolve().parents[2] / "web" / "out"
+        if (built_static / "index.html").is_file():
+            self.static_dir = built_static
+        else:
+            fallback_static = self.base / "static"
+            fallback_static.mkdir(parents=True, exist_ok=True)
+            (fallback_static / "index.html").write_text("<html><body>Octo</body></html>", encoding="utf-8")
+            self.static_dir = fallback_static
         self.env = patch.dict(os.environ, {"OCTO_HOME": str(self.home), "OCTO_OFFLINE": "1"})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -512,6 +576,72 @@ class RealHttpSseAndProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("memory.end", events_log)
         self.assertIn("provider.aclose", events_log)
         self.assertLess(events_log.index("memory.end"), events_log.index("provider.aclose"))
+
+    async def test_cancel_keeps_sse_open_from_cancelling_until_cancelled(self) -> None:
+        provider = SlowCancelProvider()
+        config, session_id = self._session_config(provider)
+        runtime = WebRuntime(WebRuntimeConfig(cwd=self.cwd, session_config=config, owns_initial_provider=True))
+        probe = _bind_loopback_socket()
+        _, port = probe.getsockname()
+        probe.close()
+        origin = f"http://127.0.0.1:{port}"
+        app = create_app(runtime, static_dir=self.static_dir, allowed_origins=(origin,), heartbeat_seconds=0.5)
+
+        uv_config = uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            proxy_headers=False,
+            timeout_graceful_shutdown=2,
+        )
+        server = uvicorn.Server(uv_config)
+        server_task = asyncio.create_task(server.serve())
+        try:
+            while not server.started:
+                if server_task.done():
+                    await server_task
+                await asyncio.sleep(0.01)
+
+            async with httpx.AsyncClient(base_url=origin, trust_env=False, timeout=5.0) as client:
+                post = await client.post(
+                    f"/api/sessions/{session_id}/runs",
+                    headers={"Origin": origin},
+                    json={"client_request_id": "cancel-sse-1", "topic_id": "main", "text": "slow cancel"},
+                )
+                self.assertEqual(post.status_code, 202)
+                run_id = post.json()["run_id"]
+
+                statuses_seen: list[str] = []
+                cancel_task: asyncio.Task[httpx.Response] | None = None
+                async with client.stream("GET", f"/api/runs/{run_id}/events") as stream:
+                    self.assertEqual(stream.status_code, 200)
+                    async for _, raw_data in iter_sse_events(stream):
+                        env = json.loads(raw_data)
+                        if env["kind"] == "snapshot":
+                            provider.allow_stage1.set()
+                        elif env["kind"] == "agent_event" and env["payload"].get("type") == "message_update":
+                            if cancel_task is None:
+                                cancel_task = asyncio.create_task(
+                                    client.post(f"/api/runs/{run_id}/cancel", headers={"Origin": origin}, json={})
+                                )
+                        elif env["kind"] == "run_status":
+                            status = env["payload"]["status"]
+                            statuses_seen.append(status)
+                            if status == "cancelling":
+                                await asyncio.wait_for(provider.cancel_observed.wait(), timeout=2.0)
+                                provider.finish_cancel.set()
+
+                self.assertEqual(statuses_seen, ["cancelling", "cancelled"])
+                self.assertIsNotNone(cancel_task)
+                assert cancel_task is not None
+                cancel_resp = await cancel_task
+                self.assertEqual(cancel_resp.status_code, 200)
+                self.assertEqual((await client.get(f"/api/runs/{run_id}")).json()["status"], "cancelled")
+        finally:
+            server.should_exit = True
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(server_task, timeout=5.0)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import time
 import unittest
 
 import httpx
+from typer.testing import CliRunner
 
 from terminal_app.paths import OctoPaths
 from terminal_app.provider_config import (
@@ -18,6 +19,9 @@ from terminal_app.provider_config import (
     ProviderSettings,
     save_provider_settings,
 )
+from web_api.cli import cli_app
+
+_STATIC_INDEX = Path(__file__).resolve().parents[2] / "web" / "out" / "index.html"
 
 
 def _free_port() -> int:
@@ -27,10 +31,16 @@ def _free_port() -> int:
 
 
 class OctoWebCliProcessTests(unittest.TestCase):
+    def test_cli_rejects_non_loopback_host_by_default(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli_app, ["--host", "0.0.0.0"])
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("--allow-non-loopback", result.output)
+
+    @unittest.skipUnless(_STATIC_INDEX.is_file(), "请先构建 web/out/index.html")
     def test_octo_web_process_serves_static_build_and_enforces_boundaries(self) -> None:
         root = Path(__file__).resolve().parents[2]
         static_dir = root / "web" / "out"
-        self.assertTrue((static_dir / "index.html").is_file(), "请先构建 web/out")
 
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)

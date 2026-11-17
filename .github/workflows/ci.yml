@@ -23,10 +23,17 @@ jobs:
         with:
           python-version: "3.12"
           activate-environment: false
-      - name: Install Python dependencies
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Python and Web build dependencies
         env:
           UV_PYTHON: "3.12"
-        run: python tools/install_dependencies.py --python-only
+        run: |
+          python tools/install_dependencies.py
+          npm --prefix web run build
       - name: Run offline smoke tests
         run: .venv/bin/python tools/verify.py
       - name: Run unit tests
