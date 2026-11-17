@@ -1,0 +1,21 @@
+[Unit]
+Description=Octo Web
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=octo
+Group=octo
+WorkingDirectory=/home/octo/workspace
+Environment=HOME=/home/octo
+Environment=OCTO_HOME=/home/octo/.octo
+EnvironmentFile=/home/octo/.octo/web.env
+ExecStart=/home/octo/apps/octo/dependencies/python/.venv/bin/octo-web --host 127.0.0.1 --port 18300 --cwd /home/octo/workspace
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

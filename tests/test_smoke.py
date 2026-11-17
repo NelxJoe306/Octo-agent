@@ -17,7 +17,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 sys.dont_write_bytecode = True
-PACKAGES = ("agent_core", "model_adapters", "long_term_memory", "terminal_app")
+PACKAGES = ("agent_core", "model_adapters", "long_term_memory", "terminal_app", "web_api")
 
 
 def all_sources():

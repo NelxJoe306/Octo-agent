@@ -306,3 +306,327 @@ export function layoutRounds(
 export function openTopicTab(tabs: TopicId[], id: TopicId): TopicId[] {
   return tabs.includes(id) ? tabs : [...tabs, id];
 }
+
+export const runStatusSchema = z.enum([
+  "starting",
+  "running",
+  "cancelling",
+  "completed",
+  "cancelled",
+  "failed",
+]);
+export type RunStatus = z.infer<typeof runStatusSchema>;
+
+export const healthSchema = z.object({
+  ok: z.boolean(),
+  mode: z.literal("service"),
+  session_id: z.string().nullable(),
+  busy: z.boolean(),
+});
+
+export const stateSchema = z.object({
+  mode: z.literal("service"),
+  session_id: sessionId,
+  session_title: z.string(),
+  current_topic_id: topicId,
+  active_run_id: z.string().nullable(),
+  active_run_topic_id: topicId.nullable(),
+  active_run_status: runStatusSchema.nullable(),
+  running: z.boolean(),
+  model: z.string(),
+  provider_name: z.string(),
+  model_display_name: z.string(),
+  notice: z.string().nullable(),
+  capabilities: z.object({
+    chat: z.boolean(),
+    sessions: z.boolean(),
+    topics: z.boolean(),
+    streaming: z.boolean(),
+    cancel: z.boolean(),
+  }),
+});
+export type ServiceState = z.infer<typeof stateSchema>;
+
+export const sessionSummarySchema = z.object({
+  id: sessionId,
+  title: z.string(),
+  model: z.string(),
+  provider_name: z.string().nullable(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  is_active: z.boolean(),
+});
+export const sessionListSchema = z.object({
+  active_session_id: sessionId,
+  sessions: z.array(sessionSummarySchema),
+});
+export type SessionSummary = z.infer<typeof sessionSummarySchema>;
+
+export const sessionActionSchema = z.object({
+  state: stateSchema,
+  notice: z.string().nullable(),
+});
+
+export const toolExecutionSchema = z.object({
+  tool_call_id: z.string(),
+  tool_name: z.string(),
+  status: z.enum(["running", "completed", "error"]),
+  args: z.record(z.string(), z.unknown()).default({}),
+  partial_text: z.string().default(""),
+  result_text: z.string().default(""),
+  is_error: z.boolean().default(false),
+});
+export type ToolExecution = z.infer<typeof toolExecutionSchema>;
+
+export const runSnapshotSchema = z.object({
+  run_id: z.string(),
+  client_request_id: z.string(),
+  session_id: sessionId,
+  topic_id: topicId,
+  status: runStatusSchema,
+  seq: z.number().int().nonnegative(),
+  user_text: z.string(),
+  assistant_text: z.string(),
+  thinking_text: z.string(),
+  committed_assistant_text: z.string().default(""),
+  committed_thinking_text: z.string().default(""),
+  tool_executions: z.array(toolExecutionSchema),
+  error_code: z.string().nullable(),
+  error_message: z.string().nullable(),
+  budget: z.record(z.string(), z.unknown()).nullable().optional(),
+  recovery: z.record(z.string(), z.unknown()).nullable().optional(),
+  created_at: z.number(),
+  updated_at: z.number(),
+  finished_at: z.number().nullable(),
+});
+export type RunSnapshot = z.infer<typeof runSnapshotSchema>;
+
+export const runAcceptedSchema = z.object({
+  run_id: z.string(),
+  client_request_id: z.string(),
+  session_id: sessionId,
+  topic_id: topicId,
+  status: runStatusSchema,
+});
+
+export const runEventEnvelopeSchema = z.object({
+  run_id: z.string(),
+  session_id: sessionId,
+  topic_id: topicId,
+  seq: z.number().int().nonnegative(),
+  kind: z.enum(["snapshot", "agent_event", "run_status"]),
+  payload: z.record(z.string(), z.unknown()),
+});
+export type RunEventEnvelope = z.infer<typeof runEventEnvelopeSchema>;
+
+export type RunStreamState = {
+  snapshot: RunSnapshot;
+  baseAssistantText: string;
+  baseThinkingText: string;
+};
+
+export function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "completed" || status === "cancelled" || status === "failed";
+}
+
+function joinParts(prefix: string, current: string): string {
+  if (prefix && current) return `${prefix}\n\n${current}`;
+  return prefix || current;
+}
+
+function extractMessageParts(message: unknown): {
+  role: string | null;
+  text: string;
+  thinking: string;
+} {
+  if (!message || typeof message !== "object") {
+    return { role: null, text: "", thinking: "" };
+  }
+  const record = message as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role : null;
+  const content = record.content;
+  if (typeof content === "string") {
+    return { role, text: content, thinking: "" };
+  }
+  if (!Array.isArray(content)) {
+    return { role, text: "", thinking: "" };
+  }
+  const texts: string[] = [];
+  const thinkings: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") continue;
+    const block = item as Record<string, unknown>;
+    if (block.type === "text" && typeof block.text === "string") {
+      texts.push(block.text);
+    } else if (block.type === "thinking" && typeof block.thinking === "string") {
+      thinkings.push(block.thinking);
+    }
+  }
+  return { role, text: texts.join(""), thinking: thinkings.join("") };
+}
+
+function extractResultText(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const content = (result as Record<string, unknown>).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const block = item as Record<string, unknown>;
+      return block.type === "text" && typeof block.text === "string"
+        ? block.text
+        : "";
+    })
+    .join("\n");
+}
+
+export function createRunStreamState(snapshot: RunSnapshot): RunStreamState {
+  return {
+    snapshot,
+    baseAssistantText: snapshot.committed_assistant_text,
+    baseThinkingText: snapshot.committed_thinking_text,
+  };
+}
+
+export function applyRunEvent(
+  current: RunStreamState | null,
+  envelope: RunEventEnvelope,
+): RunStreamState | null {
+  if (envelope.kind === "snapshot") {
+    return createRunStreamState(runSnapshotSchema.parse(envelope.payload));
+  }
+  if (!current || current.snapshot.run_id !== envelope.run_id) {
+    return current;
+  }
+  if (envelope.seq <= current.snapshot.seq) {
+    return current;
+  }
+  if (envelope.kind === "run_status") {
+    const status = runStatusSchema.parse(envelope.payload.status);
+    return {
+      ...current,
+      snapshot: {
+        ...current.snapshot,
+        seq: envelope.seq,
+        status,
+        error_code:
+          typeof envelope.payload.errorCode === "string"
+            ? envelope.payload.errorCode
+            : null,
+        error_message:
+          typeof envelope.payload.errorMessage === "string"
+            ? envelope.payload.errorMessage
+            : null,
+        finished_at:
+          typeof envelope.payload.finishedAt === "number"
+            ? envelope.payload.finishedAt
+            : current.snapshot.finished_at,
+      },
+    };
+  }
+  const eventType = envelope.payload.type;
+  let nextSnapshot: RunSnapshot = {
+    ...current.snapshot,
+    seq: envelope.seq,
+  };
+  let nextBaseAssistant = current.baseAssistantText;
+  let nextBaseThinking = current.baseThinkingText;
+
+  if (
+    eventType === "message_start" ||
+    eventType === "message_update" ||
+    eventType === "message_end"
+  ) {
+    const parts = extractMessageParts(envelope.payload.message);
+    if (parts.role === "assistant") {
+      if (eventType === "message_start") {
+        nextBaseAssistant = current.snapshot.assistant_text;
+        nextBaseThinking = current.snapshot.thinking_text;
+      }
+      const combinedText = joinParts(nextBaseAssistant, parts.text);
+      const combinedThinking = joinParts(nextBaseThinking, parts.thinking);
+      nextSnapshot = {
+        ...nextSnapshot,
+        assistant_text: combinedText,
+        thinking_text: combinedThinking,
+        committed_assistant_text:
+          eventType === "message_end"
+            ? combinedText
+            : current.snapshot.committed_assistant_text,
+        committed_thinking_text:
+          eventType === "message_end"
+            ? combinedThinking
+            : current.snapshot.committed_thinking_text,
+      };
+      if (eventType === "message_end") {
+        nextBaseAssistant = combinedText;
+        nextBaseThinking = combinedThinking;
+      }
+    }
+  } else if (
+    eventType === "tool_execution_start" ||
+    eventType === "tool_execution_update" ||
+    eventType === "tool_execution_end"
+  ) {
+    const callId =
+      typeof envelope.payload.toolCallId === "string"
+        ? envelope.payload.toolCallId
+        : "";
+    const toolName =
+      typeof envelope.payload.toolName === "string"
+        ? envelope.payload.toolName
+        : "";
+    if (callId) {
+      const existing = [...nextSnapshot.tool_executions];
+      const idx = existing.findIndex((item) => item.tool_call_id === callId);
+      const rawArgs =
+        envelope.payload.args &&
+        typeof envelope.payload.args === "object" &&
+        !Array.isArray(envelope.payload.args)
+          ? (envelope.payload.args as Record<string, unknown>)
+          : {};
+      if (eventType === "tool_execution_start") {
+        const entry: ToolExecution = {
+          tool_call_id: callId,
+          tool_name: toolName,
+          status: "running",
+          args: rawArgs,
+          partial_text: "",
+          result_text: "",
+          is_error: false,
+        };
+        if (idx >= 0) existing[idx] = entry;
+        else existing.push(entry);
+      } else if (eventType === "tool_execution_update" && idx >= 0) {
+        const currentTool = existing[idx];
+        if (currentTool) {
+          existing[idx] = {
+            ...currentTool,
+            partial_text: extractResultText(envelope.payload.partialResult),
+          };
+        }
+      } else if (eventType === "tool_execution_end") {
+        const isError = Boolean(envelope.payload.isError);
+        const currentTool = idx >= 0 ? existing[idx] : undefined;
+        const entry: ToolExecution = {
+          tool_call_id: callId,
+          tool_name: toolName || currentTool?.tool_name || "",
+          status: isError ? "error" : "completed",
+          args: currentTool?.args ?? rawArgs,
+          partial_text: "",
+          result_text: extractResultText(envelope.payload.result),
+          is_error: isError,
+        };
+        if (idx >= 0) existing[idx] = entry;
+        else existing.push(entry);
+      }
+      nextSnapshot = { ...nextSnapshot, tool_executions: existing };
+    }
+  }
+  return {
+    snapshot: nextSnapshot,
+    baseAssistantText: nextBaseAssistant,
+    baseThinkingText: nextBaseThinking,
+  };
+}

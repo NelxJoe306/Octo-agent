@@ -9,9 +9,10 @@ class ModuleBoundaryTests(unittest.TestCase):
     def test_lower_layers_do_not_import_terminal_or_higher_level_modules(self):
         source=Path(__file__).resolve().parents[2]/'src'
         forbidden={
-            'agent_core':{'model_adapters','long_term_memory','terminal_app'},
-            'model_adapters':{'long_term_memory','terminal_app'},
-            'long_term_memory':{'terminal_app'},
+            'agent_core':{'model_adapters','long_term_memory','terminal_app','web_api','fastapi'},
+            'model_adapters':{'long_term_memory','terminal_app','web_api','fastapi'},
+            'long_term_memory':{'terminal_app','web_api','fastapi'},
+            'terminal_app':{'web_api','fastapi'},
         }
         for package,blocked in forbidden.items():
             self.assertTrue((source/package).is_dir(),f"Missing functional source directory: {package}")

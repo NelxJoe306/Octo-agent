@@ -41,7 +41,7 @@ def main() -> None:
             create=[uv,'venv',str(environment)]
             if args.offline:create.append('--offline')
             subprocess.run(create,cwd=ROOT,check=True)
-        command=[uv,'pip','install','--python',str(interpreter),'-e',str(ROOT)]
+        command=[uv,'pip','install','--python',str(interpreter),'-e',f'{ROOT}[web]']
         if args.offline:command.append('--offline')
         subprocess.run(command,cwd=ROOT,check=True)
         link_directory(ROOT/'.venv',environment)
