@@ -27,13 +27,18 @@ dependencies = [
 # no extra test-only Python packages.
 [project.optional-dependencies]
 dev = []
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 
 [project.scripts]
 octo = "terminal_app.cli:app"
+octo-web = "web_api.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["agent_core*", "model_adapters*", "long_term_memory*", "terminal_app*"]
+include = ["agent_core*", "model_adapters*", "long_term_memory*", "terminal_app*", "web_api*"]
 namespaces = false
 
 [tool.setuptools.package-data]
